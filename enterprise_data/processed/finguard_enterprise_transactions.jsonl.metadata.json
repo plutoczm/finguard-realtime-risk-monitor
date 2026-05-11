@@ -1,0 +1,10 @@
+{
+  "source": "enterprise_data\\raw\\amlworld_transactions_prepared.csv",
+  "output": "enterprise_data\\processed\\finguard_enterprise_transactions.jsonl",
+  "converted_rows": 200000,
+  "skipped_rows": 0,
+  "laundering_rows": 8,
+  "total_amount": 161584976993.04,
+  "max_amount": 5708715112.36,
+  "generated_at": "2026-05-11T07:14:29.728297Z"
+}

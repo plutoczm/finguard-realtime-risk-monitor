@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FinGuard 三维智能风险监控指挥舱</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts-gl@2/dist/echarts-gl.min.js"></script>
+</head>
+<body class="enterprise-cn">
+  <canvas id="space" aria-hidden="true"></canvas>
+  <div class="ambient-layer" aria-hidden="true">
+    <span class="beam beam-a"></span>
+    <span class="beam beam-b"></span>
+    <span class="beam beam-c"></span>
+    <span class="depth-halo"></span>
+  </div>
+  <div class="scan-line" aria-hidden="true"></div>
+  <div class="world-grid" aria-hidden="true"></div>
+
+  <main class="cockpit">
+    <header class="top-command holo-frame">
+      <div class="brand-zone">
+        <div class="brand-cube" aria-hidden="true"><i></i></div>
+        <div>
+          <p class="eyebrow">企业级支付交易实时风控</p>
+          <h1>FinGuard 三维智能风险监控指挥舱</h1>
+        </div>
+      </div>
+      <div class="run-state">
+        <span class="pulse-dot"></span>
+        <span>实时计算运行中</span>
+        <b id="clock">--:--:--</b>
+      </div>
+      <div class="command-chips" aria-label="系统运行状态">
+        <span>Kafka 流入</span>
+        <span>Flink 规则引擎</span>
+        <span>文件告警 Sink</span>
+      </div>
+    </header>
+
+    <section class="filter-bar holo-frame" aria-label="数据筛选器">
+      <label>
+        风险标签
+        <select id="riskFilter">
+          <option value="ALL">全部风险标签</option>
+        </select>
+      </label>
+      <label>
+        支付通道
+        <select id="channelFilter">
+          <option value="ALL">全部支付通道</option>
+        </select>
+      </label>
+      <label class="range-control">
+        金额层级
+        <input id="amountRange" type="range" min="0" max="100" value="0">
+        <strong id="amountValue">全部</strong>
+      </label>
+      <button id="resetView" type="button">重置联动视图</button>
+    </section>
+
+    <section class="kpi-grid" id="kpis" aria-label="核心风控指标"></section>
+
+    <section class="stage">
+      <aside class="side-stack left-stack">
+        <article class="holo-panel layer-low">
+          <div class="panel-head">
+            <h2>交易风险时序</h2>
+            <span>流量 / 金额 / 失败</span>
+          </div>
+          <div class="chart" id="timeSeriesChart"></div>
+        </article>
+
+        <article class="holo-panel layer-mid">
+          <div class="panel-head">
+            <h2>通道风险热力矩阵</h2>
+            <span>渠道 × 风险标签</span>
+          </div>
+          <div class="chart" id="heatmapChart"></div>
+        </article>
+      </aside>
+
+      <section class="center-stack">
+        <article class="risk-core holo-frame">
+          <div class="core-orbit">
+            <span></span><span></span><span></span>
+            <div class="core-ball">
+              <b id="coreScore">--</b>
+              <small>风险脉冲</small>
+            </div>
+          </div>
+          <div class="core-copy">
+            <p>三维风险态势核心</p>
+            <h2>金额、时间、风险分在空间中实时映射</h2>
+            <span>全球商户、城市、规则与告警流在同一风险场中聚合。</span>
+          </div>
+          <div class="core-flow" id="flowChart" aria-label="交易主体流向网络"></div>
+        </article>
+
+        <article class="holo-panel main-panel layer-high">
+          <div class="panel-head">
+            <h2>交易三维星图</h2>
+            <span>Scatter3D 风险空间</span>
+          </div>
+          <div class="chart big" id="scatterChart"></div>
+        </article>
+      </section>
+
+      <aside class="side-stack right-stack">
+        <article class="holo-panel layer-mid">
+          <div class="panel-head">
+            <h2>风险等级核心</h2>
+            <span>告警等级分布</span>
+          </div>
+          <div class="chart" id="riskLevelChart"></div>
+        </article>
+
+        <article class="holo-panel layer-low">
+          <div class="panel-head">
+            <h2>商户收款重力柱</h2>
+            <span>商户金额 TopN</span>
+          </div>
+          <div class="chart" id="merchantChart"></div>
+        </article>
+      </aside>
+    </section>
+
+    <section class="bottom-grid">
+      <article class="holo-panel layer-low">
+        <div class="panel-head">
+          <h2>城市交易金额天际线</h2>
+          <span>城市 TopN</span>
+        </div>
+        <div class="chart compact" id="cityChart"></div>
+      </article>
+
+      <article class="holo-panel layer-mid">
+        <div class="panel-head">
+          <h2>规则命中频谱</h2>
+          <span>规则告警量</span>
+        </div>
+        <div class="chart compact" id="ruleChart"></div>
+      </article>
+
+      <article class="holo-panel insight-panel layer-high">
+        <div class="panel-head">
+          <h2>智能研判建议</h2>
+          <span>Risk Brain</span>
+        </div>
+        <ul id="insights"></ul>
+      </article>
+    </section>
+
+    <section class="holo-panel alert-panel layer-high">
+      <div class="panel-head">
+        <h2>实时风险告警流</h2>
+        <span>规则 / 主体 / 原因</span>
+      </div>
+      <div class="alert-list" id="alerts"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

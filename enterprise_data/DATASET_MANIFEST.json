@@ -1,0 +1,12 @@
+{
+  "dataset_name": "aaronzeller/small-aml-data",
+  "source_url": "https://huggingface.co/datasets/aaronzeller/small-aml-data",
+  "raw_file": "enterprise_data/raw/amlworld_transactions_prepared.csv",
+  "raw_file_bytes": 1451216131,
+  "size_limit_requirement": "under 40GB",
+  "processed_sample_file": "enterprise_data/processed/finguard_enterprise_transactions.jsonl",
+  "processed_sample_rows": 200000,
+  "processed_sample_bytes": 124350761,
+  "scenario": "enterprise-scale synthetic financial transactions for AML and payment risk monitoring",
+  "license_note": "See the Hugging Face dataset page and original IBM AML dataset references before redistribution."
+}

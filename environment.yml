@@ -1,0 +1,11 @@
+name: finguard-risk-monitor
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - faker==25.8.0
+      - jsonschema==4.22.0
+      - kafka-python==2.0.2
+      - pytest==8.2.2

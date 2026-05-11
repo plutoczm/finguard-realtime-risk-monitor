@@ -1,0 +1,51 @@
+# Local secrets and machine-specific files
+.env
+*.local
+*.pid
+*.log
+hs_err_pid*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node / dashboard verification scratch
+node_modules/
+package-lock.json
+dashboard/verify-*.png
+
+# Java / Maven build output
+flink-job/target/
+*.class
+
+# Flink runtime state and generated sink data
+data/checkpoints/**
+!data/checkpoints/**/
+!data/checkpoints/**/README.md
+data/output/**
+!data/output/**/
+!data/output/**/README.md
+data/alerts/**
+!data/alerts/**/
+!data/alerts/**/README.md
+data/late_events/**
+!data/late_events/**/
+!data/late_events/**/README.md
+
+# Enterprise-scale datasets are reproducible but too large for GitHub.
+# Keep README, manifest, and small metadata tracked.
+enterprise_data/raw/
+enterprise_data/processed/*.jsonl
+!enterprise_data/processed/*.metadata.json
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

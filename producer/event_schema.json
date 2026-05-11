@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finguard.local/schema/payment-events.json",
+  "title": "FinGuard Payment Events",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/transaction_event"
+    },
+    {
+      "$ref": "#/$defs/user_event"
+    }
+  ],
+  "$defs": {
+    "transaction_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "transaction_id",
+        "user_id",
+        "account_id",
+        "card_id",
+        "merchant_id",
+        "device_id",
+        "ip",
+        "province",
+        "city",
+        "amount",
+        "currency",
+        "payment_method",
+        "transaction_type",
+        "transaction_status",
+        "event_time",
+        "process_time",
+        "channel",
+        "app_version",
+        "is_black_device",
+        "is_black_card",
+        "risk_label"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 8
+        },
+        "transaction_id": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "account_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "merchant_id": {
+          "type": "string"
+        },
+        "device_id": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "province": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "enum": [
+            "CNY"
+          ]
+        },
+        "payment_method": {
+          "type": "string",
+          "enum": [
+            "BALANCE",
+            "BANK_CARD",
+            "CREDIT_CARD",
+            "DEBIT_CARD",
+            "WALLET"
+          ]
+        },
+        "transaction_type": {
+          "type": "string",
+          "enum": [
+            "PAY",
+            "REFUND",
+            "TRANSFER",
+            "WITHDRAW"
+          ]
+        },
+        "transaction_status": {
+          "type": "string",
+          "enum": [
+            "SUCCESS",
+            "FAILED",
+            "CANCELLED",
+            "PENDING"
+          ]
+        },
+        "event_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "process_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "APP",
+            "H5",
+            "MINI_PROGRAM",
+            "POS",
+            "API"
+          ]
+        },
+        "app_version": {
+          "type": "string"
+        },
+        "is_black_device": {
+          "type": "boolean"
+        },
+        "is_black_card": {
+          "type": "boolean"
+        },
+        "risk_label": {
+          "type": "string"
+        }
+      }
+    },
+    "user_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "user_id",
+        "device_id",
+        "ip",
+        "event_type",
+        "event_time",
+        "province",
+        "city",
+        "channel"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 8
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "device_id": {
+          "type": "string"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "LOGIN",
+            "LOGOUT",
+            "BIND_CARD",
+            "UNBIND_CARD",
+            "CHANGE_DEVICE",
+            "CHANGE_PASSWORD"
+          ]
+        },
+        "event_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "province": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "APP",
+            "H5",
+            "MINI_PROGRAM",
+            "POS",
+            "API"
+          ]
+        }
+      }
+    }
+  }
+}
