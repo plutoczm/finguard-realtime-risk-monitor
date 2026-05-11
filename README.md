@@ -175,7 +175,7 @@ python producer/kafka_producer.py --mode late --count 200
 
 ## 企业级数据与智能大屏
 
-项目已扩展企业级公开 AML 数据接入，默认数据源为 Hugging Face `aaronzeller/small-aml-data`，约 1.45GB、约 6.9M 笔合成金融交易，低于 40GB 上限。
+项目为企业级公开 AML 数据接入，默认数据源为 Hugging Face `aaronzeller/small-aml-data`，约 1.45GB、约 6.9M 笔合成金融交易。
 
 下载企业级数据，支持断点续传：
 
@@ -274,20 +274,6 @@ http://localhost:8090
 - 消息积压：通过 Kafka lag、Flink backpressure、Checkpoint 观察。
 - 反压：重点排查 Sink、热点 key、窗口大小和 TaskManager 资源。
 - 结果一致性：文档中明确 exactly-once、at-least-once 和幂等边界。
-
-## 简历写法
-
-FinGuard：基于 Kafka + Flink 构建支付交易实时风控与异常监控平台，设计交易事件模型、Kafka Topic、Flink DataStream 作业和 8 类风控规则；实现事件时间 Watermark、滚动/滑动窗口、Keyed State、State TTL、Checkpoint、event_id 去重、迟到数据旁路输出和文件 Sink，支持 Windows 11 + Docker Compose 本地端到端运行。
-
-## 3 分钟面试讲解稿
-
-FinGuard 是我设计的一个支付实时风控项目，目标是模拟互联网支付平台的交易事件流，并用 Kafka + Flink 做秒级风险识别。整体链路是 Python Producer 生成交易事件写入 Kafka，Flink 作业消费 `payment_transaction_events`，基于事件时间做 Watermark 和窗口计算，再把实时指标、风险告警、迟到事件和死信事件写入文件 Sink。
-
-项目里我实现了 8 条规则，包括用户 1 分钟高频交易、5 分钟大额交易、设备多用户关联、银行卡多用户关联、连续失败支付、黑名单设备、用户金额突增和商户收款突增。规则不只是简单 if 判断，有些是窗口聚合，有些是 Keyed State，例如连续失败次数和用户历史均值。
-
-这个项目的重点是流处理语义。我用 `event_time` 做事件时间，用 Watermark 容忍乱序，用 side output 处理严重迟到事件，用 `event_id` 状态做去重，用 Checkpoint 保证 Kafka offset 和 Flink 状态恢复一致。同时我在文档里明确说明，Kafka 到 Flink 状态可以做到 exactly-once，但文件输出和下游消费还需要 `alert_id` 幂等配合，不能夸大全链路绝对 exactly-once。
-
-本地运行方面，我提供了 Docker Compose、Makefile 和 PowerShell 脚本，Windows 11 + Docker Desktop + WSL2 可以启动 Kafka 和 Flink，并通过 Flink UI 查看作业、Checkpoint 和反压。如果继续扩展，我会把规则配置做成广播流，引入 ClickHouse 或 PostgreSQL 做 Dashboard，并补充更完整的压测和告警降噪。
 
 ## 文档索引
 
