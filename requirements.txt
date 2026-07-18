@@ -1,4 +1,7 @@
-faker==25.8.0
-jsonschema==4.22.0
-kafka-python==2.0.2
-pytest==8.2.2
+# Core dependencies for local development
+faker>=25.0
+jsonschema>=4.22
+kafka-python>=2.0
+pytest>=8.2
+
+# Vercel deployment: uses static build (scripts/generate_vercel_data.py uses stdlib only)
