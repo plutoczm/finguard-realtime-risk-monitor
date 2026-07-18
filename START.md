@@ -1,25 +1,29 @@
-# 一键启动
+# 一键启停
 
 ```powershell
 .\start.cmd
 ```
 
-本机启动。
+后台持续运行。
 
 ```powershell
 .\start.cmd lan
 ```
 
-局域网访问。
+局域网运行。
 
 ```powershell
 .\start.cmd public
 ```
 
-公网访问。
+打开公网版本。
 
 ```powershell
-npm run dev
+.\stop.cmd
 ```
 
-前台调试。
+一键关闭。
+
+本机网址：http://127.0.0.1:8090
+
+公网网址：https://finguard-realtime-risk-monitor.vercel.app
