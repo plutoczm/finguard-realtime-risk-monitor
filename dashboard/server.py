@@ -288,11 +288,24 @@ def build_dashboard_payload() -> dict:
     }
 
 
+def load_generated_dashboard() -> dict:
+    generated_path = STATIC_DIR / "api" / "dashboard.json"
+    if not generated_path.exists():
+        return {}
+    try:
+        return json.loads(generated_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/dashboard":
-            self.send_json(build_dashboard_payload())
+            payload = build_dashboard_payload()
+            if not payload.get("overview", {}).get("event_sample_count"):
+                payload = load_generated_dashboard() or payload
+            self.send_json(payload)
             return
         if parsed.path == "/":
             self.serve_file(STATIC_DIR / "index.html")

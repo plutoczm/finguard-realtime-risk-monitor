@@ -11,6 +11,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.runtime/
 .venv/
 venv/
 env/
@@ -19,6 +20,7 @@ env/
 node_modules/
 package-lock.json
 dashboard/verify-*.png
+dashboard/static/api/dashboard.json
 
 # Java / Maven build output
 flink-job/target/
@@ -45,6 +47,8 @@ enterprise_data/processed/*.jsonl
 !enterprise_data/processed/*.metadata.json
 
 # IDE / OS
+.vercel/
+.env*.local
 .idea/
 .vscode/
 .DS_Store

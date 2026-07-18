@@ -1,0 +1,59 @@
+# Flink JAR and build artifacts
+flink-job/target/
+flink-job/pom.xml
+flink-job/src/
+
+# Docker
+docker-compose.yml
+
+# Heavy data
+enterprise_data/
+data/alerts/
+data/late_events/
+data/output/
+
+# Sample data (keep the transactions.json if needed)
+
+# Python cache
+__pycache__/
+.venv/
+.runtime/
+*.pyc
+*.pyo
+
+# Conda
+environment.yml
+
+# Docs
+docs/
+
+# Tests
+tests/
+
+# Reports
+reports/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+
+# Config
+.env.example
+Makefile
+
+# Scripts (keep generate_vercel_data.py)
+scripts/*.ps1
+scripts/download_*.py
+scripts/enterprise_*.ps1
+scripts/run_all.ps1
+
+# Python server (not needed for Vercel static deployment)
+dashboard/server.py
+
+# Producer
+producer/

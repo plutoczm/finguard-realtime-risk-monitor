@@ -195,17 +195,54 @@ python producer/enterprise_dataset.py --limit 200000
 python producer/enterprise_kafka_producer.py --bootstrap-server localhost:9092 --topic payment_transaction_events --qps 500 --limit 100000
 ```
 
-启动沉浸式三维智能大屏：
+### 一键启动 Dashboard
+
+Windows 在项目根目录双击 `start.cmd`，或执行：
 
 ```powershell
-python dashboard/server.py --port 8090
+.\start.cmd
 ```
 
-访问：
+脚本会自动查找 Conda、创建缺失的 `finguard-risk-monitor` 环境、生成演示数据、启动服务并打开浏览器。也可以通过 npm 使用同一入口：
+
+```powershell
+npm run start
+```
+
+三种启动模式：
+
+```powershell
+# 仅本机访问
+.\start.cmd
+
+# 同一局域网内的其他电脑或手机访问
+.\start.cmd lan
+
+# 直接打开 Vercel 公网版本，跨网络访问且本机无需运行服务
+.\start.cmd public
+```
+
+公网固定地址：
 
 ```text
-http://localhost:8090
+https://finguard-realtime-risk-monitor.vercel.app
 ```
+
+需要以前台方式调试本地服务时：
+
+```powershell
+npm run dev
+```
+
+本机访问地址：
+
+```text
+http://127.0.0.1:8090
+```
+
+`lan` 模式会绑定 `0.0.0.0` 并在终端列出当前电脑的局域网 IPv4 地址；它只适用于同一局域网。位于不同网络的设备应使用上面的 Vercel 公网地址，不需要配置路由器端口映射。
+
+启动器不会把项目数据或运行缓存写入 C 盘用户目录：业务数据位于项目的 `data/`、`enterprise_data/` 和 `dashboard/static/api/`，日志、PID、临时文件、Python/pip/Conda 缓存位于项目的 `.runtime/`。如果新机器上只存在 C 盘的同名环境，而项目本身位于其他磁盘，启动器会忽略该环境，并在项目的 `.runtime/conda-env/` 中创建项目专属环境。当前机器已有的 `D:\Anaconda\envs\finguard-risk-monitor` 会继续复用。
 
 如果要把企业级数据放到你本机 `HADOOP_HOME` 对应的 HDFS：
 
@@ -274,6 +311,49 @@ http://localhost:8090
 - 消息积压：通过 Kafka lag、Flink backpressure、Checkpoint 观察。
 - 反压：重点排查 Sink、热点 key、窗口大小和 TaskManager 资源。
 - 结果一致性：文档中明确 exactly-once、at-least-once 和幂等边界。
+
+## 🚀 Deploy to Vercel
+
+The 3D risk monitoring dashboard is deployed as a static site with pre-generated demo data. The Kafka/Flink pipeline runs on infrastructure — Vercel hosts the visualization cockpit.
+
+Production URL: https://finguard-realtime-risk-monitor.vercel.app
+
+### Quick Deploy
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/plutoczm/finguard-realtime-risk-monitor)
+
+Or manually:
+
+```bash
+# 1. Generate demo dashboard data
+python scripts/generate_vercel_data.py
+
+# 2. Deploy dashboard/static/ as static site
+vercel --cwd .
+
+# Or link and deploy
+vercel link
+vercel deploy
+```
+
+### How It Works
+
+| Layer | Where it runs |
+|---|---|
+| Kafka + Flink pipeline | Docker / on-prem / cloud infrastructure |
+| Dashboard API (`/api/dashboard`) | Served as static JSON via Vercel rewrites |
+| 3D visualization cockpit | Static HTML/CSS/JS with Three.js + ECharts CDN |
+
+The `vercel.json` rewrites `/api/dashboard` → `/api/dashboard.json` so the frontend's `fetch('/api/dashboard')` works seamlessly with pre-generated data. For production with live data, swap the static JSON for a serverless function or edge API.
+
+### Configuration
+
+| File | Purpose |
+|---|---|
+| `vercel.json` | Sets `dashboard/static/` as output, rewrites API route to JSON |
+| `scripts/generate_vercel_data.py` | Generates sample `dashboard/static/api/dashboard.json` |
+| `package.json` | Minimal project config for Vercel |
+| `.vercelignore` | Excludes Flink JARs, Docker, producer, enterprise data |
 
 ## 文档索引
 
