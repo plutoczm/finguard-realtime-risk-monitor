@@ -8,6 +8,7 @@
     "start": ".\\start.cmd",
     "start:lan": ".\\start.cmd lan",
     "start:public": ".\\start.cmd public",
+    "stop": ".\\stop.cmd",
     "dev": ".\\start.cmd local -Foreground -NoOpen"
   },
   "engines": {
