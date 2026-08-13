@@ -22,12 +22,19 @@ def test_parse_metric_rows_handles_aggregates_and_values():
     assert parsed["numRestarts"]["value"] == 2.0
 
 
+def test_parse_metric_rows_drops_non_finite_values():
+    rows = [
+        {"id": "busyTimeMsPerSecond", "max": float("nan"), "sum": float("inf")},
+        {"id": "backPressuredTimeMsPerSecond", "max": "0"},
+    ]
+    parsed = parse_metric_rows(rows)
+    assert parsed["busyTimeMsPerSecond"] == {}
+    assert parsed["backPressuredTimeMsPerSecond"] == {"max": 0.0}
+
+
 def test_summarize_samples_separates_lag_capacity_and_processed_ratio():
     baseline = Sample(0, 0, 100, 0, 10, 20, 1)
-    samples = [
-        Sample(1, 40, 220, 120, 700, 25, 1),
-        Sample(2, 0, 395, 80, 500, 30, 1),
-    ]
+    samples = [Sample(1, 40, 220, 120, 700, 25, 1), Sample(2, 0, 395, 80, 500, 30, 1)]
     result = summarize_samples(samples, baseline, events=300)
     assert result["source_records_out_delta"] == 295.0
     assert result["processed_ratio"] == 0.9833
