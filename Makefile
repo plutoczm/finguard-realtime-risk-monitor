@@ -40,7 +40,7 @@ dashboard:
 	$(PYTHON) dashboard/server.py --port 8090
 
 ai:
-	uvicorn ai_service.app:app --host 0.0.0.0 --port 8091
+	uvicorn ai_service.app:app --host 127.0.0.1 --port 8091
 
 ai-eval:
 	$(PYTHON) -m ai_service.eval --min-pass-rate 1.0

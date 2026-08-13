@@ -3,13 +3,20 @@
   if (!alertsRoot) return;
 
   const isStaticDemo = !['localhost', '127.0.0.1'].includes(window.location.hostname);
-  const apiUrl = `${window.location.protocol}//${window.location.hostname}:8091/v1/explanations`;
+  const apiBase = `${window.location.protocol}//${window.location.hostname}:8091`;
 
   const actionLabels = {
     manual_review: '人工复核',
     step_up_auth: '升级验证',
     block_recommended: '建议拦截',
     allow_with_monitoring: '放行并监控'
+  };
+
+  const actionTakenMap = {
+    manual_review: 'manual_review',
+    step_up_auth: 'step_up_auth',
+    block_recommended: 'blocked',
+    allow_with_monitoring: 'allowed'
   };
 
   const drawer = document.createElement('aside');
@@ -57,7 +64,91 @@
     parent.appendChild(section);
   }
 
-  function renderExplanation(explanation, latencyMs = null) {
+  async function submitFeedback(requestId, feedback, controls) {
+    [...controls.querySelectorAll('button')].forEach(button => { button.disabled = true; });
+    const state = controls.querySelector('.copilot-feedback-state');
+    state.textContent = '正在记录人工判定…';
+    try {
+      const response = await fetch(`${apiBase}/v1/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: requestId, ...feedback })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      state.textContent = '人工判定已写入审计记录，可用于后续质量评测。';
+      state.classList.add('saved');
+    } catch (error) {
+      state.textContent = `反馈保存失败，可重试（${error.name || 'Error'}）。`;
+      [...controls.querySelectorAll('button')].forEach(button => { button.disabled = false; });
+    }
+  }
+
+  function renderFeedbackControls(parent, requestId, explanation) {
+    if (!requestId || isStaticDemo) return;
+    const controls = document.createElement('section');
+    controls.className = 'copilot-feedback';
+    const heading = document.createElement('h3');
+    heading.textContent = '人工处置反馈';
+    controls.appendChild(heading);
+
+    const hint = document.createElement('p');
+    hint.textContent = '反馈不会改变实时规则结果，只用于审计和评测 AI 建议质量。';
+    controls.appendChild(hint);
+
+    const grid = document.createElement('div');
+    grid.className = 'copilot-feedback-grid';
+    const recommendation = explanation.recommended_action || 'manual_review';
+    const options = [
+      {
+        label: '确认风险并采纳',
+        payload: {
+          verdict: 'true_positive',
+          accepted_recommendation: true,
+          action_taken: actionTakenMap[recommendation] || 'manual_review'
+        }
+      },
+      {
+        label: '确认风险但改判',
+        payload: {
+          verdict: 'true_positive',
+          accepted_recommendation: false,
+          action_taken: 'escalated'
+        }
+      },
+      {
+        label: '判定为误报',
+        payload: {
+          verdict: 'false_positive',
+          accepted_recommendation: false,
+          action_taken: 'allowed'
+        }
+      },
+      {
+        label: '信息不足',
+        payload: {
+          verdict: 'uncertain',
+          accepted_recommendation: false,
+          action_taken: 'manual_review'
+        }
+      }
+    ];
+    options.forEach(option => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = option.label;
+      button.addEventListener('click', () => submitFeedback(requestId, option.payload, controls));
+      grid.appendChild(button);
+    });
+    controls.appendChild(grid);
+
+    const state = document.createElement('p');
+    state.className = 'copilot-feedback-state';
+    state.textContent = `审计请求：${requestId.slice(0, 8)}…`;
+    controls.appendChild(state);
+    parent.appendChild(controls);
+  }
+
+  function renderExplanation(explanation, latencyMs = null, requestId = null) {
     const status = document.getElementById('copilotStatus');
     const body = document.getElementById('copilotBody');
     body.replaceChildren();
@@ -84,8 +175,9 @@
     addListSection(body, '关键证据', explanation.key_evidence);
     addListSection(body, '调查步骤', explanation.investigation_steps);
     addListSection(body, '限制', explanation.limitations);
+    renderFeedbackControls(body, requestId, explanation);
 
-    status.textContent = source === 'llm' ? '模型解释已返回' : '当前使用可审计降级解释';
+    status.textContent = source === 'llm' ? '模型解释已返回，等待人工判定' : '当前使用可审计降级解释，等待人工判定';
   }
 
   function staticDemoExplanation(alert) {
@@ -109,7 +201,7 @@
         '检查关联用户、设备、卡和商户的近期活动。',
         '由人工分析员结合账户历史决定最终处置。'
       ],
-      limitations: ['静态 Vercel Demo 不保存模型密钥；本地运行 `make ai` 后可调用 Copilot API。'],
+      limitations: ['静态 Vercel Demo 不保存模型密钥或人工反馈；本地运行 `make ai` 后可进入完整审计闭环。'],
       source: 'static-demo'
     };
   }
@@ -129,7 +221,7 @@
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 9000);
     try {
-      const response = await fetch(apiUrl, {
+      const response = await fetch(`${apiBase}/v1/explanations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ alert, language: 'zh-CN' }),
@@ -137,7 +229,7 @@
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
-      renderExplanation(payload.explanation || {}, payload.latency_ms);
+      renderExplanation(payload.explanation || {}, payload.latency_ms, payload.request_id);
     } catch (error) {
       status.textContent = 'AI Copilot 当前不可达';
       const message = document.createElement('p');

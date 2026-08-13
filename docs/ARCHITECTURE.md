@@ -2,10 +2,11 @@
 
 ## 1. 目标
 
-FinGuard 面向支付交易风险监控，采用“确定性实时检测 + AI 调查辅助”的双层架构：
+FinGuard 面向支付交易风险监控，采用“确定性实时检测 + AI 调查辅助 + 人工反馈”的三段式架构：
 
-- Kafka + Flink 负责交易流接入、事件时间处理、状态计算、风险规则和可靠性边界；
-- AI Risk Copilot 负责把结构化告警转换为面向人工分析员的解释、证据摘要和调查步骤；
+- Kafka + Flink 负责交易流接入、事件时间、状态计算、风险规则与可靠性边界；
+- AI Risk Copilot 把结构化告警转换为解释、证据摘要和调查步骤；
+- Human Analyst 对 AI 建议做最终判定，反馈进入审计存储用于后续质量评估；
 - LLM 不参与支付授权，不影响 Flink 主链路可用性。
 
 ## 2. 运行架构
@@ -22,10 +23,14 @@ flowchart LR
     A --> UI
     A --> AI[AI Risk Copilot]
     AI --> H[Human Analyst]
+    H --> FBK[Analyst Feedback]
+    AI --> S[(Sanitized SQLite Audit)]
+    FBK --> S
+    S --> Q[Quality Summary]
     AI -. timeout/provider/schema failure .-> FB[Deterministic Fallback]
 ```
 
-本地 Docker 只运行必要基础设施：Kafka KRaft、Flink JobManager/TaskManager；AI Copilot 通过 `ai` profile 按需启动。
+本地 Docker 只运行必要基础设施：Kafka KRaft、Flink JobManager/TaskManager；AI Copilot 通过 `ai` profile 按需启动。SQLite 是内置审计状态，不引入独立数据库服务。
 
 ## 3. Flink 主链路
 
@@ -40,60 +45,65 @@ KafkaSource<String>
   -> checkpoint-aware file sinks
 ```
 
-核心能力：
+核心能力包括 schema validation、event_id + TTL 去重、Watermark/迟到旁路、8 条窗口/状态规则以及 checkpoint-aware File Sink。
 
-- `ParseTransactionProcessFunction`：解析与字段校验；非法事件进入 dead letter。
-- `EventDeduplicateFunction`：基于 `event_id` + TTL 的状态去重。
-- `LateEventRouterFunction`：严重迟到事件旁路。
-- 窗口规则：R001、R002、R003、R004、R008。
-- 状态规则：R005、R007 及商户历史基线。
-- File Sink：告警、指标、迟到、死信分离输出。
-
-## 4. AI Copilot 边界
-
-AI 服务只接受风险告警和最小化交易上下文：
+## 4. AI Copilot 主链路
 
 ```text
-RiskAlert + minimized transaction context
-  -> identifier pseudonymization / IP removal
-  -> versioned prompt
-  -> JSON-Schema structured output
-  -> analyst-facing explanation
+RiskAlert + optional transaction context
+  -> identifier pseudonymization / IP removal / nested evidence sanitation
+  -> versioned prompt + JSON-Schema output
+  -> LLM or deterministic fallback
+  -> request_id + input fingerprint
+  -> sanitized audit record
+  -> analyst verdict + recommendation acceptance
 ```
 
-失败路径不会抛给风控主链路：缺少 API Key、超时、供应商错误、JSON 解析错误或 Schema 校验失败时，返回确定性规则解释。
+### Provider reliability
 
-AI 输出包含：
+- SDK timeout and bounded retry protect request latency;
+- repeated provider failures open a process-local circuit breaker;
+- while the circuit is open, requests immediately use deterministic fallback;
+- `/healthz` exposes the circuit state;
+- provider failure never propagates into Flink detection.
 
-- `summary`
-- `recommended_action`
-- `confidence`
-- `key_evidence`
-- `investigation_steps`
-- `limitations`
-- `source`
-- `prompt_version`
+### Audit boundary
 
-## 5. 时间与状态语义
+Copilot persistence stores only:
 
-FinGuard 使用 `event_time` 作为事件时间，默认 Watermark 容忍 60 秒乱序。
+- pseudonymized/minimized context;
+- structured explanation;
+- request metadata (`request_id`, fingerprint, prompt version, source, latency);
+- analyst verdict and whether the recommendation was accepted.
 
-| 类型 | 使用点 |
-|---|---|
-| Tumbling Window | R001 用户 1 分钟交易次数 |
-| Sliding Window | R002 用户金额、R003 设备关联用户、R004 卡关联用户、R008 商户金额 |
-| Keyed State | event_id 去重、连续失败、用户/商户历史基线 |
-| State TTL | 控制高基数状态增长 |
-| Side Output | 迟到事件、死信事件 |
+Raw transaction payloads and raw identifiers are not persisted by the Copilot audit store.
 
-## 6. 一致性与故障边界
+## 5. Human feedback and evaluation
 
-- Kafka Source offset 与 Flink state 随 Checkpoint 一起恢复。
-- File Sink 使用 checkpoint-aware 提交方式。
-- 告警使用稳定 `alert_id` 支持下游幂等。
-- AI 服务位于检测链路之后，其失败只影响“解释能力”，不影响规则检测结果。
-- 项目不宣称跨任意第三方系统的全局 exactly-once。
+The analyst feedback record is keyed by `request_id`, so repeated submissions are idempotent updates rather than duplicate rows. This enables online quality indicators such as:
 
-## 7. 为什么不继续加组件
+- recommendation acceptance rate;
+- false-positive rate among reviewed cases;
+- fallback share;
+- average explanation latency;
+- comparison by future prompt versions.
 
-当前版本有意不引入数据库、Hive/HDFS、Grafana、Schema Registry、向量数据库或 Agent 框架，因为这些组件没有进入当前核心业务闭环。只有当明确出现持久查询、规则配置中心、检索增强或多步骤工具调用需求时，再按需求引入。
+Offline golden-set tests remain the merge-time regression gate. Online feedback is complementary evidence, not a replacement for curated evaluation.
+
+## 6. Health and operational surfaces
+
+- `/healthz`: process/model/circuit liveness information;
+- `/readyz`: audit-store readiness;
+- `/metrics`: Prometheus text exposition;
+- `/v1/quality/summary`: application-level quality summary;
+- `docs/OPERATIONS.md`: failure diagnosis and reset procedures.
+
+## 7. 时间、状态与一致性边界
+
+FinGuard uses `event_time` with a default 60-second out-of-order Watermark. Kafka source offsets and Flink state recover through Checkpoint; File Sink uses checkpoint-aware submission; stable `alert_id` supports downstream idempotency.
+
+The AI service is downstream of detection. If the provider is unhealthy, only explanation quality changes. If the audit store is unhealthy, `/readyz` fails and explanation requests return 503 rather than emitting an unaudited recommendation.
+
+## 8. 为什么不继续加组件
+
+当前版本有意不引入 PostgreSQL、Redis、Celery、Hive/HDFS、Grafana、Schema Registry、向量数据库或 Agent 框架。只有出现明确的多实例共享状态、异步任务、检索增强、规则配置中心或监控平台需求时，再用可证明的需求引入对应组件。

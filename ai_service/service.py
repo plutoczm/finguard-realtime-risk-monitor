@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
+from threading import Lock
 from typing import Any
 
 from ai_service.models import ExplainRequest, RiskExplanation
 
-PROMPT_VERSION = "risk-investigator-v1"
+PROMPT_VERSION = "risk-investigator-v2"
 
 SYSTEM_PROMPT = """You are FinGuard's risk-investigation copilot.
 Your job is decision support for a human risk analyst, not autonomous payment authorization.
@@ -89,11 +91,12 @@ def _sanitize_evidence(value: Any, key: str = "") -> Any:
 
 
 def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
-    """Minimize PII before any model call while preserving investigation signals."""
+    """Minimize PII before any model call or audit write while preserving investigation signals."""
     alert = request.alert
     tx = request.transaction or {}
 
     sanitized_alert = {
+        "alert_ref": _tokenize(alert.get("alert_id"), "alt"),
         "rule_id": alert.get("rule_id"),
         "rule_name": alert.get("rule_name"),
         "risk_level": alert.get("risk_level"),
@@ -144,7 +147,7 @@ def fallback_explanation(request: ExplainRequest, limitation: str | None = None)
     rule_id = str(alert.get("rule_id") or "UNKNOWN")
     level = str(alert.get("risk_level") or "UNKNOWN").upper()
     reason = str(alert.get("reason") or alert.get("rule_name") or "风险规则命中")
-    evidence = alert.get("evidence") or {}
+    evidence = _sanitize_evidence(alert.get("evidence") or {})
 
     evidence_items = [f"rule_id={rule_id}", f"risk_level={level}", reason]
     for key, value in list(evidence.items())[:4]:
@@ -196,29 +199,57 @@ class RiskExplainer:
         api_key: str | None = None,
         model: str | None = None,
         timeout_seconds: float = 8.0,
+        failure_threshold: int | None = None,
+        cooldown_seconds: float | None = None,
+        client: Any | None = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
         self.model = model or os.getenv("FINGUARD_AI_MODEL", "gpt-5-mini")
         self.timeout_seconds = timeout_seconds
+        self.failure_threshold = max(1, failure_threshold or int(os.getenv("FINGUARD_AI_FAILURE_THRESHOLD", "3")))
+        self.cooldown_seconds = max(1.0, cooldown_seconds or float(os.getenv("FINGUARD_AI_COOLDOWN_SECONDS", "30")))
+        self._lock = Lock()
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+        self._client = client
+        if self.api_key and self._client is None:
+            from openai import OpenAI
+
+            self._client = OpenAI(
+                api_key=self.api_key,
+                timeout=self.timeout_seconds,
+                max_retries=1,
+            )
 
     @property
     def llm_enabled(self) -> bool:
         return bool(self.api_key)
 
+    @property
+    def circuit_open(self) -> bool:
+        with self._lock:
+            return time.monotonic() < self._circuit_open_until
+
+    def _record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._circuit_open_until = 0.0
+
+    def _record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.failure_threshold:
+                self._circuit_open_until = time.monotonic() + self.cooldown_seconds
+
     def explain(self, request: ExplainRequest) -> RiskExplanation:
         if not self.llm_enabled:
             return fallback_explanation(request)
+        if self.circuit_open:
+            return fallback_explanation(request, limitation="LLM circuit breaker open; provider calls temporarily paused.")
 
         try:
-            from openai import OpenAI
-
-            client = OpenAI(
-                api_key=self.api_key,
-                timeout=self.timeout_seconds,
-                max_retries=1,
-            )
             payload = sanitize_context(request)
-            response = client.responses.create(
+            response = self._client.responses.create(
                 model=self.model,
                 instructions=SYSTEM_PROMPT,
                 input=json.dumps(payload, ensure_ascii=False),
@@ -232,6 +263,7 @@ class RiskExplainer:
                 },
             )
             parsed = json.loads(response.output_text)
+            self._record_success()
             return RiskExplanation(
                 **parsed,
                 source="llm",
@@ -239,6 +271,7 @@ class RiskExplainer:
                 model=self.model,
             )
         except Exception as exc:
+            self._record_failure()
             return fallback_explanation(
                 request,
                 limitation=f"LLM unavailable; fallback activated ({exc.__class__.__name__}).",

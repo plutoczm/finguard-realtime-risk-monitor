@@ -33,9 +33,7 @@
   font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
 }
 
-.copilot-drawer.open {
-  transform: translateX(0);
-}
+.copilot-drawer.open { transform: translateX(0); }
 
 .copilot-head {
   display: flex;
@@ -46,28 +44,10 @@
   border-bottom: 1px solid rgba(65, 232, 255, .18);
 }
 
-.copilot-head small {
-  color: #72ffb7;
-  letter-spacing: .12em;
-}
-
-.copilot-head h2 {
-  margin: 5px 0 0;
-  font-size: 22px;
-}
-
-.copilot-head button {
-  border: 0;
-  background: transparent;
-  color: #eefcff;
-  font-size: 28px;
-  cursor: pointer;
-}
-
-.copilot-status {
-  margin: 16px 0;
-  color: #8fb6c2;
-}
+.copilot-head small { color: #72ffb7; letter-spacing: .12em; }
+.copilot-head h2 { margin: 5px 0 0; font-size: 22px; }
+.copilot-head button { border: 0; background: transparent; color: #eefcff; font-size: 28px; cursor: pointer; }
+.copilot-status { margin: 16px 0; color: #8fb6c2; }
 
 .copilot-meta {
   display: inline-block;
@@ -79,10 +59,7 @@
   font-size: 12px;
 }
 
-.copilot-summary {
-  line-height: 1.75;
-  font-size: 15px;
-}
+.copilot-summary { line-height: 1.75; font-size: 15px; }
 
 .copilot-confidence,
 .copilot-error {
@@ -93,23 +70,38 @@
   line-height: 1.6;
 }
 
-.copilot-body section {
-  margin-top: 18px;
+.copilot-body section { margin-top: 18px; }
+.copilot-body h3 { margin: 0 0 8px; font-size: 14px; color: #41e8ff; }
+.copilot-body ul { margin: 0; padding-left: 20px; color: #c9e7ee; }
+.copilot-body li { margin: 8px 0; line-height: 1.55; }
+
+.copilot-feedback {
+  padding-top: 18px;
+  border-top: 1px solid rgba(65, 232, 255, .18);
 }
 
-.copilot-body h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-  color: #41e8ff;
+.copilot-feedback > p {
+  margin: 6px 0 12px;
+  color: #8fb6c2;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
-.copilot-body ul {
-  margin: 0;
-  padding-left: 20px;
-  color: #c9e7ee;
+.copilot-feedback-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
-.copilot-body li {
-  margin: 8px 0;
-  line-height: 1.55;
+.copilot-feedback-grid button {
+  padding: 9px 10px;
+  border: 1px solid rgba(65, 232, 255, .32);
+  border-radius: 8px;
+  background: rgba(65, 232, 255, .08);
+  color: #eefcff;
+  cursor: pointer;
 }
+
+.copilot-feedback-grid button:hover:not(:disabled) { border-color: #72ffb7; }
+.copilot-feedback-grid button:disabled { cursor: default; opacity: .48; }
+.copilot-feedback-state.saved { color: #72ffb7; }
