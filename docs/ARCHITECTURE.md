@@ -1,110 +1,99 @@
-# FinGuard 实时架构设计
+# FinGuard 架构设计
 
-## 1. 总体目标
+## 1. 目标
 
-FinGuard 面向互联网支付交易场景，构建一条从事件模拟、Kafka 接入、Flink 实时计算到文件 Sink 输出的实时风控链路。系统重点展示事件时间、Watermark、窗口、状态、Checkpoint、迟到数据旁路、重复事件处理和风险告警。
+FinGuard 面向支付交易风险监控，采用“确定性实时检测 + AI 调查辅助”的双层架构：
 
-## 2. 架构图
+- Kafka + Flink 负责交易流接入、事件时间处理、状态计算、风险规则和可靠性边界；
+- AI Risk Copilot 负责把结构化告警转换为面向人工分析员的解释、证据摘要和调查步骤；
+- LLM 不参与支付授权，不影响 Flink 主链路可用性。
+
+## 2. 运行架构
 
 ```mermaid
 flowchart LR
-    A[Transaction Producer] --> B[Kafka payment_transaction_events]
-    U[User Event Producer] --> C[Kafka payment_user_events]
-    B --> D[Flink RiskMonitorJob]
-    C -. 可扩展行为流 .-> D
-    D --> E[File Sink realtime_metrics]
-    D --> F[File Sink risk_alerts]
-    D --> G[File Sink late_events]
-    D --> H[File Sink dead_letter]
-    E --> I[Dashboard SQL / BI]
-    F --> I
+    P[Python / AML Producer] --> K[Kafka transaction topic]
+    K --> F[Flink RiskMonitorJob]
+    F --> M[Realtime Metrics File Sink]
+    F --> A[Risk Alert File Sink]
+    F --> L[Late Event Side Output]
+    F --> D[Dead Letter Side Output]
+    M --> UI[Risk Dashboard]
+    A --> UI
+    A --> AI[AI Risk Copilot]
+    AI --> H[Human Analyst]
+    AI -. timeout/provider/schema failure .-> FB[Deterministic Fallback]
 ```
 
-最小可运行链路：
+本地 Docker 只运行必要基础设施：Kafka KRaft、Flink JobManager/TaskManager；AI Copilot 通过 `ai` profile 按需启动。
 
-```text
-producer/kafka_producer.py -> Kafka -> RiskMonitorJob -> data/output + data/alerts + data/late_events
-```
-
-## 3. Kafka Topic
-
-| Topic | 说明 | 默认分区 | Key 建议 |
-|---|---|---:|---|
-| `payment_transaction_events` | 支付交易主事件流 | 6 | `user_id` |
-| `payment_user_events` | 登录、绑卡、设备变更等用户行为事件 | 3 | `user_id` |
-| `payment_risk_alerts` | 实时风险告警输出，可选 Kafka Sink | 3 | `alert_id` |
-| `payment_realtime_metrics` | 实时指标输出，可选 Kafka Sink | 3 | `metric_name` |
-| `payment_late_events` | 迟到事件输出，可选 Kafka Sink | 3 | `event_id` |
-| `payment_dead_letter_events` | 解析失败或非法事件输出，可选 Kafka Sink | 3 | `event_id` |
-
-当前代码默认使用文件 Sink，Kafka 输出 Topic 作为后续扩展预留。
-
-## 4. Flink 作业拓扑
+## 3. Flink 主链路
 
 ```text
 KafkaSource<String>
-  -> ParseTransactionProcessFunction
-  -> assignTimestampsAndWatermarks
-  -> keyBy(event_id) + EventDeduplicateFunction
-  -> LateEventRouterFunction
-  -> Rule Streams
-  -> Union Alerts
-  -> Metrics Streams
-  -> FileSink
+  -> parse + schema validation
+  -> event-time watermark
+  -> event_id deduplication
+  -> late-event routing
+  -> rule streams
+  -> alert / metric union
+  -> checkpoint-aware file sinks
 ```
 
-核心模块：
+核心能力：
 
-- `ParseTransactionProcessFunction`：JSON 解析与基础字段校验，非法数据进入 dead letter。
-- `EventDeduplicateFunction`：基于 `event_id` 的 24 小时 TTL 去重。
-- `LateEventRouterFunction`：对落后当前 Watermark 的事件做 side output。
+- `ParseTransactionProcessFunction`：解析与字段校验；非法事件进入 dead letter。
+- `EventDeduplicateFunction`：基于 `event_id` + TTL 的状态去重。
+- `LateEventRouterFunction`：严重迟到事件旁路。
 - 窗口规则：R001、R002、R003、R004、R008。
-- 状态规则：R005、R007、R008 历史均值判断。
-- 文件 Sink：告警、指标、迟到、死信分别落盘。
+- 状态规则：R005、R007 及商户历史基线。
+- File Sink：告警、指标、迟到、死信分离输出。
 
-## 5. 时间语义
+## 4. AI Copilot 边界
 
-FinGuard 以 `event_time` 作为事件时间。Flink 使用 bounded out-of-orderness Watermark：
-
-```text
-watermark = 当前观察到的最大 event_time - watermark-seconds
-```
-
-默认乱序容忍为 60 秒，可通过作业参数调整：
+AI 服务只接受风险告警和最小化交易上下文：
 
 ```text
---watermark-seconds 60
+RiskAlert + minimized transaction context
+  -> identifier pseudonymization / IP removal
+  -> versioned prompt
+  -> JSON-Schema structured output
+  -> analyst-facing explanation
 ```
 
-## 6. 状态与窗口
+失败路径不会抛给风控主链路：缺少 API Key、超时、供应商错误、JSON 解析错误或 Schema 校验失败时，返回确定性规则解释。
+
+AI 输出包含：
+
+- `summary`
+- `recommended_action`
+- `confidence`
+- `key_evidence`
+- `investigation_steps`
+- `limitations`
+- `source`
+- `prompt_version`
+
+## 5. 时间与状态语义
+
+FinGuard 使用 `event_time` 作为事件时间，默认 Watermark 容忍 60 秒乱序。
 
 | 类型 | 使用点 |
 |---|---|
 | Tumbling Window | R001 用户 1 分钟交易次数 |
-| Sliding Window | R002 用户 5 分钟金额、R003 设备 10 分钟用户数、R004 卡 10 分钟用户数、R008 商户 5 分钟金额 |
-| Keyed State | event_id 去重、连续失败次数、用户历史均值、商户历史窗口均值 |
-| State TTL | 去重 24 小时、连续失败 6 小时、用户均值 30 天、商户均值 14 天 |
+| Sliding Window | R002 用户金额、R003 设备关联用户、R004 卡关联用户、R008 商户金额 |
+| Keyed State | event_id 去重、连续失败、用户/商户历史基线 |
+| State TTL | 控制高基数状态增长 |
 | Side Output | 迟到事件、死信事件 |
 
-## 7. 输出路径
+## 6. 一致性与故障边界
 
-| 输出 | 默认路径 |
-|---|---|
-| 实时指标 | `data/output/realtime_metrics/` |
-| 风险告警 | `data/alerts/risk_alerts/` |
-| 迟到事件 | `data/late_events/` |
-| 死信事件 | `data/output/dead_letter/` |
+- Kafka Source offset 与 Flink state 随 Checkpoint 一起恢复。
+- File Sink 使用 checkpoint-aware 提交方式。
+- 告警使用稳定 `alert_id` 支持下游幂等。
+- AI 服务位于检测链路之后，其失败只影响“解释能力”，不影响规则检测结果。
+- 项目不宣称跨任意第三方系统的全局 exactly-once。
 
-在 Docker 中这些路径映射到：
+## 7. 为什么不继续加组件
 
-```text
-file:///opt/finguard/data/...
-```
-
-## 8. 扩展方向
-
-- 将文件 Sink 替换为 PostgreSQL、ClickHouse 或 Kafka Sink。
-- 将黑名单和规则配置改为广播流。
-- 引入 Schema Registry 和 Avro/Protobuf。
-- 将历史画像迁移到外部特征服务或离线画像表。
-- 引入 Grafana 展示 `sql/dashboard_queries.sql` 中的指标。
+当前版本有意不引入数据库、Hive/HDFS、Grafana、Schema Registry、向量数据库或 Agent 框架，因为这些组件没有进入当前核心业务闭环。只有当明确出现持久查询、规则配置中心、检索增强或多步骤工具调用需求时，再按需求引入。
