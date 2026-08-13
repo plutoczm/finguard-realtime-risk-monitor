@@ -33,6 +33,7 @@ flink-job/target/
 /data/late_events/
 /data/sample_events/*.json
 /data/ai_copilot/
+/reports/benchmarks/*.json
 
 # Reproducible enterprise datasets
 enterprise_data/raw/
