@@ -5,6 +5,25 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+RecommendedAction = Literal[
+    "manual_review",
+    "step_up_auth",
+    "block_recommended",
+    "allow_with_monitoring",
+]
+ActionTaken = Literal[
+    "manual_review",
+    "step_up_auth",
+    "blocked",
+    "allowed",
+    "escalated",
+    "none",
+]
+Verdict = Literal["true_positive", "false_positive", "uncertain"]
+CaseStatus = Literal["open", "investigating", "resolved"]
+CasePriority = Literal["low", "medium", "high", "critical"]
+
+
 class ExplainRequest(BaseModel):
     alert: dict[str, Any]
     transaction: dict[str, Any] | None = None
@@ -14,12 +33,7 @@ class ExplainRequest(BaseModel):
 
 class RiskExplanation(BaseModel):
     summary: str
-    recommended_action: Literal[
-        "manual_review",
-        "step_up_auth",
-        "block_recommended",
-        "allow_with_monitoring",
-    ]
+    recommended_action: RecommendedAction
     confidence: float = Field(ge=0.0, le=1.0)
     key_evidence: list[str] = Field(min_length=1, max_length=8)
     investigation_steps: list[str] = Field(min_length=1, max_length=8)
@@ -38,16 +52,9 @@ class ExplainResponse(BaseModel):
 
 class FeedbackRequest(BaseModel):
     request_id: str = Field(min_length=8, max_length=64)
-    verdict: Literal["true_positive", "false_positive", "uncertain"]
+    verdict: Verdict
     accepted_recommendation: bool
-    action_taken: Literal[
-        "manual_review",
-        "step_up_auth",
-        "blocked",
-        "allowed",
-        "escalated",
-        "none",
-    ] = "none"
+    action_taken: ActionTaken = "none"
     analyst_ref: str | None = Field(default=None, max_length=64)
 
 
@@ -82,6 +89,74 @@ class QualitySummary(BaseModel):
     false_positive_count: int
     false_positive_rate: float
     average_latency_ms: float
+
+
+class CaseCreateRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=64)
+    priority: CasePriority | None = None
+    assignee_ref: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class CaseUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    status: CaseStatus | None = None
+    priority: CasePriority | None = None
+    assignee_ref: str | None = Field(default=None, max_length=64)
+    resolution_verdict: Verdict | None = None
+    accepted_recommendation: bool | None = None
+    action_taken: ActionTaken | None = None
+    note: str | None = Field(default=None, max_length=1000)
+    actor_ref: str | None = Field(default=None, max_length=64)
+
+
+class CaseRecord(BaseModel):
+    case_id: str
+    request_id: str
+    created_at: str
+    updated_at: str
+    due_at: str
+    resolved_at: str | None = None
+    status: CaseStatus
+    priority: CasePriority
+    assignee_ref: str | None = None
+    resolution_verdict: Verdict | None = None
+    action_taken: ActionTaken | None = None
+    note: str | None = None
+    version: int
+    sla_breached: bool
+    alert_ref: str | None = None
+    rule_id: str | None = None
+    risk_level: str | None = None
+    recommended_action: str
+    source: Literal["llm", "fallback"]
+
+
+class CaseEvent(BaseModel):
+    event_id: int
+    case_id: str
+    event_type: Literal["created", "updated", "resolved", "reopened"]
+    actor_ref: str | None = None
+    created_at: str
+    from_status: CaseStatus | None = None
+    to_status: CaseStatus
+    version: int
+    note: str | None = None
+
+
+class CaseListResponse(BaseModel):
+    items: list[CaseRecord]
+    total: int
+    limit: int
+    offset: int
+
+
+class CaseSummary(BaseModel):
+    open_count: int
+    investigating_count: int
+    resolved_count: int
+    sla_breached_count: int
+    unassigned_count: int
 
 
 class HealthResponse(BaseModel):

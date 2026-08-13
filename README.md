@@ -1,8 +1,8 @@
 # FinGuard — Realtime Risk Engine + AI Investigation Copilot
 
-FinGuard 是一个面向支付风控场景的工程化 AI 应用项目：**Kafka + Flink 负责实时、确定性的风险检测，AI Risk Copilot 负责告警解释、人工调查和反馈闭环**。LLM 被刻意放在硬实时决策链路之外，因此模型失败、超时或不可用时不会阻塞风险检测。
+FinGuard 是一个面向支付风控场景的工程化 AI 应用项目：**Kafka + Flink 负责实时、确定性的风险检测，AI Risk Copilot 负责告警解释、案件管理、人工调查和反馈闭环**。LLM 被刻意放在硬实时决策链路之外，因此模型失败、超时或不可用时不会阻塞风险检测。
 
-> Portfolio focus: streaming systems, AI application engineering, structured outputs, graceful degradation, PII minimization, auditability, human feedback and CI.
+> Portfolio focus: streaming systems, AI application engineering, structured outputs, graceful degradation, PII minimization, auditability, case management, human feedback and CI.
 
 ## Architecture
 
@@ -16,8 +16,10 @@ flowchart LR
     A --> D
     A --> C[AI Risk Copilot]
     C --> H[Human Risk Analyst]
-    H --> Q[Analyst Feedback]
     C --> S[(Sanitized Audit Store)]
+    H --> CM[Case Management]
+    CM --> S
+    H --> Q[Analyst Feedback]
     Q --> S
     S --> E[Quality Summary / Eval]
     C -. provider unavailable .-> G[Deterministic Fallback]
@@ -27,6 +29,7 @@ flowchart LR
 
 - **Flink rules** own deterministic, low-latency detection, event-time windows, state, deduplication and late-data handling.
 - **LLM copilot** turns structured alert evidence into analyst-facing summaries, recommended actions and investigation steps.
+- **Case Management** turns one-off investigations into trackable work with owner, priority, SLA, status and resolution.
 - **Human feedback closes the loop**: analysts can mark true positive / false positive / uncertain and whether the AI recommendation was accepted.
 - The model **cannot authorize or reject payments**.
 - Raw identifiers are pseudonymized before model calls or audit writes; raw IP is excluded; nested evidence is recursively minimized.
@@ -38,11 +41,15 @@ flowchart LR
 The runnable path intentionally stays small:
 
 ```text
-Producer -> one Kafka transaction topic -> Flink -> File Sinks -> Dashboard / AI Copilot
-                                                     AI Copilot -> SQLite audit + analyst feedback
+Producer -> one Kafka transaction topic -> Flink -> File Sinks -> Dashboard
+                                                     |
+                                                     v
+                                      AI Copilot -> SQLite audit
+                                                     |
+                                      Case Management + Analyst Feedback
 ```
 
-SQLite is not a new platform dependency: it is the Python-standard-library persistence layer for one concrete responsibility—auditable investigation/feedback state. The project still does **not** include unused PostgreSQL, Hive/HDFS, Grafana, vector databases, Celery or Agent frameworks.
+SQLite is not a new platform dependency: it is the Python-standard-library persistence layer for one concrete responsibility—auditable investigation/case/feedback state. The project still does **not** include unused PostgreSQL, Redis, Celery, Hive/HDFS, Grafana, vector databases or Agent frameworks.
 
 ## Main capabilities
 
@@ -56,9 +63,10 @@ SQLite is not a new platform dependency: it is the Python-standard-library persi
 | AI application | FastAPI Copilot, structured outputs, prompt versioning, deterministic fallback |
 | AI reliability | provider timeout/retry boundary, circuit breaker, liveness/readiness endpoints |
 | AI safety | PII minimization, sanitized audit records, human-in-the-loop |
+| Case workflow | idempotent case creation, owner/priority/SLA, OPEN→INVESTIGATING→RESOLVED, optimistic locking, event history |
 | Feedback loop | request trace, analyst verdict, recommendation acceptance, idempotent feedback update |
 | Evaluation | offline golden-set + online acceptance/false-positive quality summary |
-| Observability | request/fallback/latency/feedback metrics plus Flink/Kafka operational signals |
+| Observability | request/fallback/latency/feedback/case-SLA metrics plus Flink/Kafka operational signals |
 | Delivery | focused runtime image, non-root AI container, Docker Compose, Vercel demo, GitHub Actions CI |
 
 ## Quick start
@@ -87,7 +95,7 @@ make ai
 # API docs:  http://127.0.0.1:8091/docs
 ```
 
-Without `OPENAI_API_KEY`, the API stays available in deterministic fallback mode. On the local Dashboard, click **AI 调查** on a risk alert, inspect the structured explanation, then record the human verdict.
+Without `OPENAI_API_KEY`, the API stays available in deterministic fallback mode. On the local Dashboard, click **AI 调查** on a risk alert, inspect the structured explanation, optionally establish a risk case, then complete the analyst disposition from the Case Workbench.
 
 Docker profile:
 
@@ -95,19 +103,34 @@ Docker profile:
 docker compose --profile ai up -d ai-copilot
 ```
 
-## AI investigation contract
+## AI investigation and case contract
 
-`POST /v1/explanations` returns a `request_id`, input fingerprint, latency and structured explanation. The same request can then be reviewed through `POST /v1/feedback`.
+`POST /v1/explanations` returns a `request_id`, input fingerprint, latency and structured explanation. The same request can be reviewed directly through `POST /v1/feedback` or promoted into a durable case through `POST /v1/cases`.
 
-Useful operational endpoints:
+Useful operational/application endpoints:
 
 ```text
-GET /healthz
-GET /readyz
-GET /metrics
-GET /v1/investigations/{request_id}
-GET /v1/quality/summary
+GET   /healthz
+GET   /readyz
+GET   /metrics
+GET   /v1/investigations/{request_id}
+GET   /v1/quality/summary
+POST  /v1/cases
+GET   /v1/cases
+GET   /v1/cases/summary
+GET   /v1/cases/{case_id}
+PATCH /v1/cases/{case_id}
+GET   /v1/cases/{case_id}/events
 ```
+
+Case defaults are intentionally operational rather than decorative:
+
+- `CRITICAL`: 15-minute SLA;
+- `HIGH`: 60-minute SLA;
+- `MEDIUM`: 4-hour SLA;
+- `LOW`: 24-hour SLA;
+- updates use `expected_version` optimistic locking; stale writes return HTTP 409 instead of silently overwriting another analyst;
+- reopening a resolved case preserves event history but invalidates the previous final feedback label until the case is resolved again.
 
 The audit store persists **sanitized context only**. It does not persist raw transaction payloads.
 
@@ -117,10 +140,12 @@ The audit store persists **sanitized context only**. It does not persist raw tra
 make ai-eval
 ```
 
-Two quality loops now exist:
+Two quality loops exist:
 
 1. **Offline regression gate**: golden cases verify expected actions/evidence before merge.
 2. **Online human feedback**: recommendation acceptance and false-positive rates are calculated from analyst verdicts.
+
+Case resolution can atomically write the final verdict and recommendation-acceptance label. This keeps the operational outcome and model-quality signal consistent.
 
 The repository does not claim measured p95/p99 latency, token cost or analyst time savings until those numbers are produced by an actual deployment/load test.
 
@@ -140,11 +165,11 @@ The repository does not claim measured p95/p99 latency, token cost or analyst ti
 ## Repository map
 
 ```text
-ai_service/     FastAPI + LLM/fallback + audit/feedback service
+ai_service/     FastAPI + LLM/fallback + audit/case/feedback service
 evals/          golden-set AI evaluation cases
 producer/       transaction generation and Kafka producer
 flink-job/      Java Flink real-time risk job
-dashboard/      risk monitoring UI with AI investigation/feedback drawer
+dashboard/      risk monitoring UI with AI investigation + analyst case workbench
 tests/          Python tests
 docs/           architecture, operations, reliability, AI and interview notes
 scripts/        minimal runtime/data tooling
@@ -158,7 +183,7 @@ Static portfolio demo:
 
 `https://finguard-realtime-risk-monitor.vercel.app`
 
-The public site contains generated demo data and a clearly labeled static Copilot fallback preview. Real model requests and analyst feedback are local-only; no model key is embedded in the static site.
+The public site contains generated demo data and a clearly labeled static Copilot fallback preview. Real model requests, cases and analyst feedback are local-only; no model key is embedded in the static site.
 
 ## Engineering docs
 

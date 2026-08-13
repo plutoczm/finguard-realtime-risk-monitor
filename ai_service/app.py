@@ -5,10 +5,18 @@ import time
 import uuid
 from threading import Lock
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from ai_service.models import (
+    CaseCreateRequest,
+    CaseEvent,
+    CaseListResponse,
+    CasePriority,
+    CaseRecord,
+    CaseStatus,
+    CaseSummary,
+    CaseUpdateRequest,
     ExplainRequest,
     ExplainResponse,
     FeedbackRequest,
@@ -23,8 +31,8 @@ from ai_service.store import InvestigationStore
 
 app = FastAPI(
     title="FinGuard AI Risk Copilot",
-    version="0.2.0",
-    description="Human-in-the-loop alert explanation, audit and analyst feedback API.",
+    version="0.3.0",
+    description="Human-in-the-loop risk investigation, audit, case management and feedback API.",
 )
 
 allowed_origins = [
@@ -39,7 +47,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Content-Type"],
     expose_headers=["X-Request-ID"],
 )
@@ -61,7 +69,7 @@ class RuntimeMetrics:
             self.fallbacks += int(source == "fallback")
             self.total_latency_ms += latency_ms
 
-    def render(self, quality: QualitySummary) -> str:
+    def render(self, quality: QualitySummary, cases: CaseSummary) -> str:
         with self.lock:
             avg = self.total_latency_ms / self.requests if self.requests else 0.0
             return (
@@ -77,6 +85,14 @@ class RuntimeMetrics:
                 f"finguard_ai_recommendation_acceptance_ratio {quality.recommendation_acceptance_rate:.4f}\n"
                 "# TYPE finguard_ai_false_positive_ratio gauge\n"
                 f"finguard_ai_false_positive_ratio {quality.false_positive_rate:.4f}\n"
+                "# TYPE finguard_cases_open gauge\n"
+                f"finguard_cases_open {cases.open_count}\n"
+                "# TYPE finguard_cases_investigating gauge\n"
+                f"finguard_cases_investigating {cases.investigating_count}\n"
+                "# TYPE finguard_cases_sla_breached gauge\n"
+                f"finguard_cases_sla_breached {cases.sla_breached_count}\n"
+                "# TYPE finguard_cases_unassigned gauge\n"
+                f"finguard_cases_unassigned {cases.unassigned_count}\n"
             )
 
 
@@ -147,9 +163,84 @@ def quality_summary() -> QualitySummary:
     return store.quality_summary()
 
 
+@app.post("/v1/cases", response_model=CaseRecord)
+def create_case(request: CaseCreateRequest) -> CaseRecord:
+    record = store.create_case(request)
+    if record is None:
+        raise HTTPException(status_code=404, detail="investigation request_id not found")
+    return record
+
+
+@app.get("/v1/cases", response_model=CaseListResponse)
+def list_cases(
+    status: CaseStatus | None = None,
+    priority: CasePriority | None = None,
+    assignee_ref: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> CaseListResponse:
+    return store.list_cases(
+        status=status,
+        priority=priority,
+        assignee_ref=assignee_ref,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/cases/summary", response_model=CaseSummary)
+def case_summary() -> CaseSummary:
+    return store.case_summary()
+
+
+@app.get("/v1/cases/{case_id}", response_model=CaseRecord)
+def get_case(case_id: str) -> CaseRecord:
+    record = store.get_case(case_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    return record
+
+
+@app.patch("/v1/cases/{case_id}", response_model=CaseRecord)
+def update_case(case_id: str, request: CaseUpdateRequest) -> CaseRecord:
+    status, record = store.update_case(case_id, request)
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="case not found")
+    if status == "version_conflict":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "case version conflict; refresh before retrying",
+                "current_version": record.version if record else None,
+            },
+        )
+    if status == "invalid_transition":
+        raise HTTPException(status_code=422, detail="invalid case status transition")
+    if status == "resolution_required":
+        raise HTTPException(
+            status_code=422,
+            detail="resolved cases require resolution_verdict and action_taken",
+        )
+    if status == "feedback_requires_resolution":
+        raise HTTPException(
+            status_code=422,
+            detail="accepted_recommendation requires resolution_verdict and action_taken",
+        )
+    assert record is not None
+    return record
+
+
+@app.get("/v1/cases/{case_id}/events", response_model=list[CaseEvent])
+def list_case_events(case_id: str) -> list[CaseEvent]:
+    events = store.list_case_events(case_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    return events
+
+
 @app.get("/metrics")
 def prometheus_metrics() -> Response:
     return Response(
-        content=metrics.render(store.quality_summary()),
+        content=metrics.render(store.quality_summary(), store.case_summary()),
         media_type="text/plain; version=0.0.4",
     )
