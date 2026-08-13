@@ -66,6 +66,28 @@ def _tokenize(value: Any, prefix: str) -> str | None:
     return f"{prefix}_{digest}"
 
 
+def _sanitize_evidence(value: Any, key: str = "") -> Any:
+    """Recursively redact identifiers that may be embedded in rule evidence."""
+    normalized = key.lower()
+    if isinstance(value, dict):
+        return {str(k): _sanitize_evidence(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_evidence(item, key) for item in value[:20]]
+    if normalized in {"ip", "ip_address", "client_ip"}:
+        return "[redacted]"
+    if normalized.endswith("_id") or normalized in {
+        "user",
+        "device",
+        "merchant",
+        "card",
+        "account",
+        "transaction",
+        "event",
+    }:
+        return _tokenize(value, "ref")
+    return value
+
+
 def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
     """Minimize PII before any model call while preserving investigation signals."""
     alert = request.alert
@@ -77,7 +99,7 @@ def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
         "risk_level": alert.get("risk_level"),
         "reason": alert.get("reason"),
         "amount": alert.get("amount"),
-        "evidence": alert.get("evidence") or {},
+        "evidence": _sanitize_evidence(alert.get("evidence") or {}),
         "user_ref": _tokenize(alert.get("user_id"), "usr"),
         "device_ref": _tokenize(alert.get("device_id"), "dev"),
         "merchant_ref": _tokenize(alert.get("merchant_id"), "mch"),
