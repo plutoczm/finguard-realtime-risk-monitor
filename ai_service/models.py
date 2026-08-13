@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from ai_service.privacy import redact_sensitive_fields
 
 
 RecommendedAction = Literal[
@@ -35,6 +37,11 @@ class ExplainRequest(BaseModel):
     transaction: dict[str, Any] | None = None
     recent_events: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     language: Literal["zh-CN", "en"] = "zh-CN"
+
+    @field_validator("alert", "transaction", "recent_events", mode="before")
+    @classmethod
+    def redact_explicit_sensitive_fields(cls, value: Any) -> Any:
+        return redact_sensitive_fields(value)
 
 
 class RiskExplanation(BaseModel):

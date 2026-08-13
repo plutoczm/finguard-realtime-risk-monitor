@@ -21,8 +21,16 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Compile Python
         run: python -m compileall ai_service dashboard producer scripts
-      - name: AI service, audit, case, capacity and benchmark tests
-        run: python -m pytest -q tests/test_ai_service.py tests/test_ai_store.py tests/test_case_management.py tests/test_ai_capacity.py tests/test_benchmark_ai.py
+      - name: AI service, audit, case, capacity, privacy and benchmark tests
+        run: >-
+          python -m pytest -q
+          tests/test_ai_service.py
+          tests/test_ai_store.py
+          tests/test_case_management.py
+          tests/test_ai_capacity.py
+          tests/test_benchmark_ai.py
+          tests/test_ai_privacy.py
+          tests/test_ai_eval.py
       - name: API contract smoke
         env:
           FINGUARD_AI_DB_PATH: ":memory:"
@@ -58,8 +66,20 @@ jobs:
           python scripts/benchmark_ai.py --requests 24 --concurrency 4 --warmup 2 --min-success-rate 1.0 --max-p95-ms 2000 --expect-source fallback
       - name: Streaming support tests
         run: python -m pytest -q tests/test_event_schema.py tests/test_enterprise_dataset.py tests/test_dedup_logic.py tests/test_risk_rules.py
-      - name: Golden-set evaluation
-        run: python -m ai_service.eval --min-pass-rate 1.0
+      - name: Multidimensional AI regression evaluation
+        run: >-
+          python -m ai_service.eval
+          --min-pass-rate 1.0
+          --min-dimension-pass-rate 1.0
+          --report reports/evals/golden.json
+      - name: Upload AI evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-${{ github.run_id }}
+          path: reports/evals/golden.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Static dashboard build
         run: python scripts/generate_vercel_data.py
       - name: Frontend syntax
