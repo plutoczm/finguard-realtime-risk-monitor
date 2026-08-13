@@ -15,7 +15,6 @@ from typing import Any
 
 DEFAULT_JOB_NAME = "FinGuard Realtime Risk Monitor"
 TASK_METRICS = (
-    "numRecordsOut",
     "backPressuredTimeMsPerSecond",
     "busyTimeMsPerSecond",
     "idleTimeMsPerSecond",
@@ -145,6 +144,18 @@ def find_source_vertex(vertices: list[dict[str, Any]]) -> dict[str, Any]:
     raise RuntimeError("Kafka transaction source vertex not found")
 
 
+def source_write_records(vertices: list[dict[str, Any]], source_vertex_id: str) -> float | None:
+    for vertex in vertices:
+        if str(vertex.get("id")) != source_vertex_id:
+            continue
+        raw = (vertex.get("metrics") or {}).get("write-records")
+        try:
+            return float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def aggregated_subtask_metrics(
     flink_url: str, job_id: str, vertex_id: str
 ) -> dict[str, dict[str, float]]:
@@ -190,20 +201,19 @@ def take_sample(
 ) -> Sample:
     backpressure_values: list[float] = []
     busy_values: list[float] = []
-    source_records_out: float | None = None
     for vertex in vertices:
         metrics = aggregated_subtask_metrics(flink_url, job_id, str(vertex["id"]))
         if "max" in metrics.get("backPressuredTimeMsPerSecond", {}):
             backpressure_values.append(metrics["backPressuredTimeMsPerSecond"]["max"])
         if "max" in metrics.get("busyTimeMsPerSecond", {}):
             busy_values.append(metrics["busyTimeMsPerSecond"]["max"])
-        if str(vertex["id"]) == source_vertex_id:
-            source_records_out = metrics.get("numRecordsOut", {}).get("sum")
+
+    current_vertices = job_vertices(flink_url, job_id)
     job_metrics = job_metric_values(flink_url, job_id)
     return Sample(
         timestamp=time.time(),
         lag=get_kafka_lag(compose, consumer_group, topic),
-        source_records_out=source_records_out,
+        source_records_out=source_write_records(current_vertices, source_vertex_id),
         max_backpressure_ms_per_second=max(backpressure_values) if backpressure_values else None,
         max_busy_ms_per_second=max(busy_values) if busy_values else None,
         last_checkpoint_duration_ms=job_metrics.get("lastCheckpointDuration"),
