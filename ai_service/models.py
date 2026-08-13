@@ -22,6 +22,12 @@ ActionTaken = Literal[
 Verdict = Literal["true_positive", "false_positive", "uncertain"]
 CaseStatus = Literal["open", "investigating", "resolved"]
 CasePriority = Literal["low", "medium", "high", "critical"]
+DegradationReason = Literal[
+    "missing_credentials",
+    "provider_error",
+    "circuit_open",
+    "bulkhead_saturated",
+]
 
 
 class ExplainRequest(BaseModel):
@@ -39,6 +45,7 @@ class RiskExplanation(BaseModel):
     investigation_steps: list[str] = Field(min_length=1, max_length=8)
     limitations: list[str] = Field(default_factory=list, max_length=8)
     source: Literal["llm", "fallback"]
+    degradation_reason: DegradationReason | None = None
     prompt_version: str
     model: str | None = None
 
@@ -165,6 +172,8 @@ class HealthResponse(BaseModel):
     model: str
     prompt_version: str
     provider_circuit_open: bool
+    provider_inflight: int = Field(ge=0)
+    provider_max_concurrency: int = Field(ge=1)
 
 
 class ReadyResponse(BaseModel):
