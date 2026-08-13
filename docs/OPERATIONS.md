@@ -1,6 +1,6 @@
 # FinGuard Operations Runbook
 
-This runbook covers the local/portfolio deployment boundary. It documents failure handling without pretending the repository is a full production platform.
+This runbook covers the local/portfolio deployment boundary without pretending the repository is a full production platform.
 
 ## Health checks
 
@@ -8,85 +8,45 @@ This runbook covers the local/portfolio deployment boundary. It documents failur
 |---|---|---|
 | Kafka | `docker compose ps` | broker healthy |
 | Flink | `http://127.0.0.1:8081` | JobManager reachable and job running |
-| AI liveness | `GET http://127.0.0.1:8091/healthz` | `status=ok` |
-| AI readiness | `GET http://127.0.0.1:8091/readyz` | `status=ready`, audit store `ok` |
-| AI metrics | `GET http://127.0.0.1:8091/metrics` | counters/gauges returned |
-| Case workload | `GET http://127.0.0.1:8091/v1/cases/summary` | active/SLA counts returned |
+| AI liveness | `GET /healthz` | process/model/capacity state returned |
+| AI readiness | `GET /readyz` | audit store `ok` |
+| AI metrics | `GET /metrics` | request/degradation/capacity metrics returned |
+| Case workload | `GET /v1/cases/summary` | active/SLA counts returned |
 
-## Failure modes
+`/healthz` also exposes `provider_circuit_open`, `provider_inflight` and `provider_max_concurrency`.
 
-### Provider unavailable or slow
+## Provider unavailable or slow
 
-Expected behavior: explanation requests fall back to deterministic output. After repeated failures, the circuit breaker pauses upstream model calls for a cooldown period. Flink risk detection is unaffected.
+Explanation requests fall back deterministically. Repeated failures open the circuit breaker for a cooldown period. Flink risk detection is unaffected. Check the provider circuit state and `finguard_ai_degradation_total{reason="provider_error"}`.
 
-Check `provider_circuit_open` in `/healthz` and `finguard_ai_fallback_total` in `/metrics`.
+## Provider capacity saturated
 
-### Audit store unavailable
+The Copilot uses a process-local provider bulkhead. At most `FINGUARD_AI_MAX_CONCURRENCY` model calls can be in flight. If no slot is available within `FINGUARD_AI_BULKHEAD_WAIT_MS`, the request uses deterministic fallback instead of building an unbounded wait queue.
 
-`/readyz` returns 503. Explanation requests also return 503 rather than emitting an unaudited AI recommendation. Restore write access or reset the local state volume before retrying.
+Expected result: `source=fallback`, `degradation_reason=bulkhead_saturated`.
 
-Docker state is stored in the `finguard_ai_state` named volume. Local `make ai` stores the SQLite file under `data/ai_copilot/` by default.
+Increase concurrency only after measuring provider quota, latency and local resource behavior.
 
-### Case update conflict
+## Audit store unavailable
 
-Case mutation uses optimistic concurrency. Every `PATCH /v1/cases/{case_id}` carries `expected_version`.
+`/readyz` returns 503. Explanation requests also return 503 rather than emitting an unaudited recommendation. Docker state is stored in `finguard_ai_state`; local `make ai` uses `data/ai_copilot/` by default.
 
-If another analyst or browser tab has updated the case first, the API returns HTTP 409. The client should refresh the latest case and retry intentionally; it must not blindly overwrite the newer state.
+## Case conflict, SLA and reopen semantics
 
-### SLA breach
+Every `PATCH /v1/cases/{case_id}` carries `expected_version`; stale updates return HTTP 409. `GET /v1/cases/summary` reports SLA breaches. Reopening `RESOLVED -> INVESTIGATING` preserves historical events but clears the current resolution and feedback label until resolution happens again.
 
-`GET /v1/cases/summary` reports `sla_breached_count`, and `/metrics` exposes `finguard_cases_sla_breached`.
+## Kafka backlog / Flink backpressure
 
-The local workbench sorts higher-priority cases first and then by due time. A breach is an operational prioritization signal; it does not alter the underlying Flink risk decision.
+Check Kafka consumer lag, Flink Back Pressure, busy time and checkpoint duration. Increase partitions or parallelism only after identifying an actual bottleneck.
 
-### Reopened case
+## Benchmark and capacity checks
 
-Reopening transitions `RESOLVED -> INVESTIGATING`.
+Run `make ai-benchmark` against a running Copilot. Credential-free fallback mode is appropriate for infrastructure testing. A benchmark against a real provider key can incur actual model usage.
 
-The previous resolution remains in `case_events` for audit history, but the current `resolution_verdict`, `action_taken`, `resolved_at` and analyst-feedback label are cleared. This prevents a reopened case from remaining counted as a final labeled outcome.
+CI runs a small live fallback-mode benchmark with a deliberately loose regression gate: 100% success and client p95 below 2000 ms. This is not a production SLO claim. See `docs/PERFORMANCE.md`.
 
-### Kafka backlog / Flink backpressure
+## Recovery and scaling boundary
 
-Check Kafka consumer lag, Flink Back Pressure, busy time and checkpoint duration. Only increase partitions/parallelism after identifying an actual bottleneck. The project intentionally avoids speculative scaling components.
+`make clean` removes Docker volumes and generated runtime/audit data; it is destructive and intended only for local reset.
 
-### Bad or duplicate analyst feedback
-
-Feedback writes are idempotent by `request_id`. A repeated submission updates the existing verdict. Unknown request IDs return 404 and are not inserted.
-
-## Case workflow operator checks
-
-Useful endpoints:
-
-```text
-POST  /v1/cases
-GET   /v1/cases?status=investigating&priority=high
-GET   /v1/cases/summary
-GET   /v1/cases/{case_id}
-PATCH /v1/cases/{case_id}
-GET   /v1/cases/{case_id}/events
-```
-
-Default SLA targets:
-
-| Priority | SLA |
-|---|---:|
-| critical | 15 min |
-| high | 60 min |
-| medium | 4 h |
-| low | 24 h |
-
-These are portfolio defaults, not claims about a real financial institution's policy.
-
-## Recovery and reset
-
-```bash
-make clean
-```
-
-This removes Docker volumes plus generated runtime/audit data. It is destructive and intended only for local reset.
-
-## Security boundary
-
-Local Docker ports are bound to `127.0.0.1`. The Copilot container runs as a non-root user. The static Vercel demo contains no model credentials and does not write cases or analyst feedback.
-
-The current SQLite store assumes one AI service instance. Before exposing the service to a shared network or running multiple replicas, add identity/RBAC, secrets management and a shared transactional persistence layer. Those are explicit production prerequisites rather than hidden assumptions.
+Local ports bind to `127.0.0.1`; the Copilot container runs as non-root. SQLite and the provider bulkhead are single-instance mechanisms. Before multi-replica/shared-network deployment, add identity/RBAC, secrets management, shared transactional persistence and a provider-wide quota/capacity policy.
