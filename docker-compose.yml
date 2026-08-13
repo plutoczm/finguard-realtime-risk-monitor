@@ -72,6 +72,23 @@ services:
       - ./flink-job/target:/opt/flink/usrlib
       - ./data:/opt/finguard/data
 
+  ai-copilot:
+    build:
+      context: .
+      dockerfile: ai_service/Dockerfile
+    container_name: finguard-ai-copilot
+    profiles: ["ai"]
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FINGUARD_AI_MODEL: ${FINGUARD_AI_MODEL:-gpt-5-mini}
+    ports:
+      - "8091:8091"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     container_name: finguard-postgres
