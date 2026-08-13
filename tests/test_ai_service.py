@@ -9,6 +9,10 @@ def test_sanitize_context_removes_raw_identifiers_and_ip():
             "risk_level": "HIGH",
             "user_id": "user-secret",
             "device_id": "device-secret",
+            "evidence": {
+                "card_id": "card-secret",
+                "nested": {"ip": "192.168.1.9", "account_id": "acct-secret"},
+            },
         },
         transaction={
             "user_id": "user-secret",
@@ -23,6 +27,10 @@ def test_sanitize_context_removes_raw_identifiers_and_ip():
     assert "device-secret" not in payload
     assert "merchant-secret" not in payload
     assert "10.1.2.3" not in payload
+    assert "card-secret" not in payload
+    assert "192.168.1.9" not in payload
+    assert "acct-secret" not in payload
+    assert "[redacted]" in payload
     assert "usr_" in payload
     assert "dev_" in payload
 
