@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FinGuard 三维智能风险监控指挥舱</title>
+  <title>FinGuard 实时风险监控台</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/copilot.css">
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/echarts-gl@2/dist/echarts-gl.min.js"></script>
@@ -25,19 +26,19 @@
       <div class="brand-zone">
         <div class="brand-cube" aria-hidden="true"><i></i></div>
         <div>
-          <p class="eyebrow">企业级支付交易实时风控</p>
-          <h1>FinGuard 三维智能风险监控指挥舱</h1>
+          <p class="eyebrow">实时支付风控 · AI 调查辅助</p>
+          <h1>FinGuard 实时风险监控台</h1>
         </div>
       </div>
       <div class="run-state">
         <span class="pulse-dot"></span>
-        <span>实时计算运行中</span>
+        <span>风险链路运行中</span>
         <b id="clock">--:--:--</b>
       </div>
       <div class="command-chips" aria-label="系统运行状态">
-        <span>Kafka 流入</span>
-        <span>Flink 规则引擎</span>
-        <span>文件告警 Sink</span>
+        <span>Kafka KRaft</span>
+        <span>Flink Risk Engine</span>
+        <span>AI Risk Copilot</span>
       </div>
     </header>
 
@@ -93,9 +94,9 @@
             </div>
           </div>
           <div class="core-copy">
-            <p>三维风险态势核心</p>
-            <h2>金额、时间、风险分在空间中实时映射</h2>
-            <span>全球商户、城市、规则与告警流在同一风险场中聚合。</span>
+            <p>实时风险态势</p>
+            <h2>金额、时间、规则信号统一映射</h2>
+            <span>用于定位风险聚集区；最终处置由规则结果与人工调查共同决定。</span>
           </div>
           <div class="core-flow" id="flowChart" aria-label="交易主体流向网络"></div>
         </article>
@@ -103,7 +104,7 @@
         <article class="holo-panel main-panel layer-high">
           <div class="panel-head">
             <h2>交易三维星图</h2>
-            <span>Scatter3D 风险空间</span>
+            <span>金额 × 时间 × 风险分</span>
           </div>
           <div class="chart big" id="scatterChart"></div>
         </article>
@@ -112,16 +113,16 @@
       <aside class="side-stack right-stack">
         <article class="holo-panel layer-mid">
           <div class="panel-head">
-            <h2>风险等级核心</h2>
-            <span>告警等级分布</span>
+            <h2>风险等级分布</h2>
+            <span>告警等级</span>
           </div>
           <div class="chart" id="riskLevelChart"></div>
         </article>
 
         <article class="holo-panel layer-low">
           <div class="panel-head">
-            <h2>商户收款重力柱</h2>
-            <span>商户金额 TopN</span>
+            <h2>商户收款 TopN</h2>
+            <span>窗口金额</span>
           </div>
           <div class="chart" id="merchantChart"></div>
         </article>
@@ -131,7 +132,7 @@
     <section class="bottom-grid">
       <article class="holo-panel layer-low">
         <div class="panel-head">
-          <h2>城市交易金额天际线</h2>
+          <h2>城市交易金额</h2>
           <span>城市 TopN</span>
         </div>
         <div class="chart compact" id="cityChart"></div>
@@ -139,7 +140,7 @@
 
       <article class="holo-panel layer-mid">
         <div class="panel-head">
-          <h2>规则命中频谱</h2>
+          <h2>规则命中分布</h2>
           <span>规则告警量</span>
         </div>
         <div class="chart compact" id="ruleChart"></div>
@@ -147,8 +148,8 @@
 
       <article class="holo-panel insight-panel layer-high">
         <div class="panel-head">
-          <h2>智能研判建议</h2>
-          <span>Risk Brain</span>
+          <h2>规则研判提示</h2>
+          <span>Deterministic Signals</span>
         </div>
         <ul id="insights"></ul>
       </article>
@@ -156,13 +157,14 @@
 
     <section class="holo-panel alert-panel layer-high">
       <div class="panel-head">
-        <h2>实时风险告警流</h2>
-        <span>规则 / 主体 / 原因</span>
+        <h2>实时风险告警</h2>
+        <span>点击“AI 调查”生成结构化解释</span>
       </div>
       <div class="alert-list" id="alerts"></div>
     </section>
   </main>
 
   <script src="/app.js"></script>
+  <script src="/copilot.js"></script>
 </body>
 </html>

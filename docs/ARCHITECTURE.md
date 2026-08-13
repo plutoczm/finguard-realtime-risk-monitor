@@ -1,110 +1,148 @@
-# FinGuard 实时架构设计
+# FinGuard 架构设计
 
-## 1. 总体目标
+## 1. 目标
 
-FinGuard 面向互联网支付交易场景，构建一条从事件模拟、Kafka 接入、Flink 实时计算到文件 Sink 输出的实时风控链路。系统重点展示事件时间、Watermark、窗口、状态、Checkpoint、迟到数据旁路、重复事件处理和风险告警。
+FinGuard 面向支付交易风险监控，采用“确定性实时检测 + AI 调查辅助 + 案件管理 + 人工反馈”的四段式架构：
 
-## 2. 架构图
+- Kafka + Flink 负责交易流接入、事件时间、状态计算、风险规则与可靠性边界；
+- AI Risk Copilot 把结构化告警转换为解释、证据摘要和调查步骤；
+- Case Management 将需要持续跟踪的调查转成有负责人、优先级、SLA 和状态机的案件；
+- Human Analyst 对 AI 建议做最终处置，反馈进入审计存储用于后续质量评估；
+- LLM 不参与支付授权，不影响 Flink 主链路可用性。
+
+## 2. 运行架构
 
 ```mermaid
 flowchart LR
-    A[Transaction Producer] --> B[Kafka payment_transaction_events]
-    U[User Event Producer] --> C[Kafka payment_user_events]
-    B --> D[Flink RiskMonitorJob]
-    C -. 可扩展行为流 .-> D
-    D --> E[File Sink realtime_metrics]
-    D --> F[File Sink risk_alerts]
-    D --> G[File Sink late_events]
-    D --> H[File Sink dead_letter]
-    E --> I[Dashboard SQL / BI]
-    F --> I
+    P[Python / AML Producer] --> K[Kafka transaction topic]
+    K --> F[Flink RiskMonitorJob]
+    F --> M[Realtime Metrics File Sink]
+    F --> A[Risk Alert File Sink]
+    F --> L[Late Event Side Output]
+    F --> D[Dead Letter Side Output]
+    M --> UI[Risk Dashboard]
+    A --> UI
+    A --> AI[AI Risk Copilot]
+    AI --> H[Human Analyst]
+    AI --> S[(Sanitized SQLite Audit)]
+    H --> C[Case Management]
+    C --> S
+    H --> FBK[Analyst Feedback]
+    FBK --> S
+    S --> Q[Quality / Case Summary]
+    AI -. timeout/provider/schema failure .-> FB[Deterministic Fallback]
 ```
 
-最小可运行链路：
+本地 Docker 只运行必要基础设施：Kafka KRaft、Flink JobManager/TaskManager；AI Copilot 通过 `ai` profile 按需启动。SQLite 是内置审计与案件状态，不引入独立数据库服务。
 
-```text
-producer/kafka_producer.py -> Kafka -> RiskMonitorJob -> data/output + data/alerts + data/late_events
-```
-
-## 3. Kafka Topic
-
-| Topic | 说明 | 默认分区 | Key 建议 |
-|---|---|---:|---|
-| `payment_transaction_events` | 支付交易主事件流 | 6 | `user_id` |
-| `payment_user_events` | 登录、绑卡、设备变更等用户行为事件 | 3 | `user_id` |
-| `payment_risk_alerts` | 实时风险告警输出，可选 Kafka Sink | 3 | `alert_id` |
-| `payment_realtime_metrics` | 实时指标输出，可选 Kafka Sink | 3 | `metric_name` |
-| `payment_late_events` | 迟到事件输出，可选 Kafka Sink | 3 | `event_id` |
-| `payment_dead_letter_events` | 解析失败或非法事件输出，可选 Kafka Sink | 3 | `event_id` |
-
-当前代码默认使用文件 Sink，Kafka 输出 Topic 作为后续扩展预留。
-
-## 4. Flink 作业拓扑
+## 3. Flink 主链路
 
 ```text
 KafkaSource<String>
-  -> ParseTransactionProcessFunction
-  -> assignTimestampsAndWatermarks
-  -> keyBy(event_id) + EventDeduplicateFunction
-  -> LateEventRouterFunction
-  -> Rule Streams
-  -> Union Alerts
-  -> Metrics Streams
-  -> FileSink
+  -> parse + schema validation
+  -> event-time watermark
+  -> event_id deduplication
+  -> late-event routing
+  -> rule streams
+  -> alert / metric union
+  -> checkpoint-aware file sinks
 ```
 
-核心模块：
+核心能力包括 schema validation、event_id + TTL 去重、Watermark/迟到旁路、8 条窗口/状态规则以及 checkpoint-aware File Sink。
 
-- `ParseTransactionProcessFunction`：JSON 解析与基础字段校验，非法数据进入 dead letter。
-- `EventDeduplicateFunction`：基于 `event_id` 的 24 小时 TTL 去重。
-- `LateEventRouterFunction`：对落后当前 Watermark 的事件做 side output。
-- 窗口规则：R001、R002、R003、R004、R008。
-- 状态规则：R005、R007、R008 历史均值判断。
-- 文件 Sink：告警、指标、迟到、死信分别落盘。
-
-## 5. 时间语义
-
-FinGuard 以 `event_time` 作为事件时间。Flink 使用 bounded out-of-orderness Watermark：
+## 4. AI Copilot 主链路
 
 ```text
-watermark = 当前观察到的最大 event_time - watermark-seconds
+RiskAlert + optional transaction context
+  -> identifier pseudonymization / IP removal / nested evidence sanitation
+  -> versioned prompt + JSON-Schema output
+  -> LLM or deterministic fallback
+  -> request_id + input fingerprint
+  -> sanitized audit record
+  -> optional case creation
+  -> analyst disposition / recommendation acceptance
 ```
 
-默认乱序容忍为 60 秒，可通过作业参数调整：
+### Provider reliability
+
+- SDK timeout and bounded retry protect request latency；
+- repeated provider failures open a process-local circuit breaker；
+- while the circuit is open, requests immediately use deterministic fallback；
+- `/healthz` exposes the circuit state；
+- provider failure never propagates into Flink detection。
+
+### Audit boundary
+
+Copilot persistence stores only:
+
+- pseudonymized/minimized context；
+- structured explanation；
+- request metadata (`request_id`, fingerprint, prompt version, source, latency)；
+- analyst verdict and whether the recommendation was accepted；
+- case workflow metadata such as status, priority, assignee, SLA and event history。
+
+Raw transaction payloads and raw identifiers are not persisted by the Copilot audit store.
+
+## 5. Case Management 语义
+
+案件不是每条告警的强制副本。只有需要持续跟踪、分派或 SLA 管理的调查才升级为 Case。
+
+状态机：
 
 ```text
---watermark-seconds 60
+OPEN -> INVESTIGATING -> RESOLVED
+  ^          |              |
+  |----------+              |
+             <--- REOPEN ---+
 ```
 
-## 6. 状态与窗口
+约束：
 
-| 类型 | 使用点 |
-|---|---|
-| Tumbling Window | R001 用户 1 分钟交易次数 |
-| Sliding Window | R002 用户 5 分钟金额、R003 设备 10 分钟用户数、R004 卡 10 分钟用户数、R008 商户 5 分钟金额 |
-| Keyed State | event_id 去重、连续失败次数、用户历史均值、商户历史窗口均值 |
-| State TTL | 去重 24 小时、连续失败 6 小时、用户均值 30 天、商户均值 14 天 |
-| Side Output | 迟到事件、死信事件 |
+- 同一 `request_id` 只能建立一个案件，重复建案返回同一 Case；
+- 默认优先级由风险等级映射；
+- SLA：Critical 15 分钟、High 60 分钟、Medium 4 小时、Low 24 小时；
+- 更新请求必须携带 `expected_version`；
+- 版本不一致返回 HTTP 409，防止两个分析员静默覆盖彼此修改；
+- 结案必须提供 `resolution_verdict` 与 `action_taken`；
+- 如果结案同时提供 `accepted_recommendation`，案件结果和 AI 质量反馈在同一 SQLite transaction 中写入；
+- 重新打开案件会撤销上一版最终反馈标签，但 `case_events` 保留所有历史状态变化。
 
-## 7. 输出路径
+## 6. Human feedback and evaluation
 
-| 输出 | 默认路径 |
-|---|---|
-| 实时指标 | `data/output/realtime_metrics/` |
-| 风险告警 | `data/alerts/risk_alerts/` |
-| 迟到事件 | `data/late_events/` |
-| 死信事件 | `data/output/dead_letter/` |
+Analyst feedback is keyed by `request_id`, so repeated submissions are idempotent updates rather than duplicate rows. This enables online quality indicators such as:
 
-在 Docker 中这些路径映射到：
+- recommendation acceptance rate；
+- false-positive rate among reviewed cases；
+- fallback share；
+- average explanation latency；
+- open/investigating/SLA-breached case counts；
+- comparison by future prompt versions。
 
-```text
-file:///opt/finguard/data/...
-```
+Offline golden-set tests remain the merge-time regression gate. Online feedback is complementary evidence, not a replacement for curated evaluation.
 
-## 8. 扩展方向
+## 7. Health and operational surfaces
 
-- 将文件 Sink 替换为 PostgreSQL、ClickHouse 或 Kafka Sink。
-- 将黑名单和规则配置改为广播流。
-- 引入 Schema Registry 和 Avro/Protobuf。
-- 将历史画像迁移到外部特征服务或离线画像表。
-- 引入 Grafana 展示 `sql/dashboard_queries.sql` 中的指标。
+- `/healthz`: process/model/circuit liveness information；
+- `/readyz`: audit-store readiness；
+- `/metrics`: Prometheus text exposition including case counters［
+- `/v1/quality/summary`: application-level AI quality summary；
+- `/v1/cases/summary`: active case/SLA workload summary；
+- `docs/OPERATIONS.md`: failure diagnosis and reset procedures。
+
+## 8. 时间、状态与一致性边界
+
+FinGuard uses `event_time` with a default 60-second out-of-order Watermark. Kafka source offsets and Flink state recover through Checkpoint；File Sink uses checkpoint-aware submission；stable `alert_id` supports downstream idempotency。
+
+The AI service is downstream of detection. If the provider is unhealthy, only explanation quality changes. If the audit store is unhealthy, `/readyz` fails and explanation requests return 503 rather than emitting an unaudited recommendation.
+
+Case updates use application-level optimistic concurrency. This is intentionally separate from Flink's event-stream consistency boundary.
+
+## 9. 当前部署边界
+
+The SQLite case/audit store is appropriate for the current single-instance local/portfolio runtime. It is **not** presented as a horizontally scalable shared database. A managed relational database should only replace it when there is a concrete multi-instance/shared-state requirement.
+
+Authentication/authorization is also intentionally outside the local-only deployment boundary; Docker ports bind to `127.0.0.1`. Exposing this service to a network would require identity, RBAC and secrets management before deployment.
+
+## 10. 为什么不继续加组件
+
+当前版本有意不引入 PostgreSQL、Redis、Celery、Hive/HDFS、Grafana、Schema Registry、向量数据库或 Agent 框架。只有出现明确的多实例共享状态、异步任务、检索增强、规则配置中心或监控平台需求时，再用可证明的需求引入对应组件。

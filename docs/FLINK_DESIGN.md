@@ -2,22 +2,11 @@
 
 ## 1. 作业入口
 
-主类：
-
-```text
-com.finguard.RiskMonitorJob
-```
-
-打包：
+主类：`com.finguard.RiskMonitorJob`
 
 ```bash
 cd flink-job
 mvn -q -DskipTests package
-```
-
-提交：
-
-```bash
 make submit-job
 ```
 
@@ -43,9 +32,9 @@ KafkaSource
   -> watermark
   -> event_id dedup
   -> late event side output
-  -> rules
-  -> metrics
-  -> file sinks
+  -> rule streams
+  -> metric streams
+  -> checkpoint-aware file sinks
 ```
 
 ## 4. 规则实现
@@ -65,21 +54,16 @@ KafkaSource
 
 已实现：
 
-- 近 1 分钟交易笔数：`transaction_count_1m`
-- 近 5 分钟交易金额：`transaction_amount_5m`
-- 各支付渠道成功率：`channel_success_rate_5m`
-- 各商户实时收款金额：`merchant_realtime_amount_5m`
-- 高风险交易/告警数量：`high_risk_alert_count_1m`
-- 风险告警数量：`risk_alert_count_1m`
+- `transaction_count_1m`
+- `transaction_amount_5m`
+- `channel_success_rate_5m`
+- `merchant_realtime_amount_5m`
+- `high_risk_alert_count_1m`
+- `risk_alert_count_1m`
 
-文档化扩展：
-
-- 各城市交易金额 TopN：可按 `city` 做 5 分钟窗口金额聚合，再使用窗口结束时间二次 keyBy 做 TopN。
-- 连续失败支付用户数：可将 R005 命中用户写入指标流后按窗口 distinct user。
+未进入当前产品闭环的 TopN、额外数据库聚合等能力不预先实现；需要新的页面或消费方时再增加对应流。
 
 ## 6. Checkpoint
-
-代码中启用：
 
 ```text
 Checkpoint interval: 60s
@@ -101,11 +85,6 @@ Checkpoint 存储路径可由 `--checkpoint-dir` 调整。
 3. 检查热点 key，例如单个用户、设备或商户流量过高。
 4. 检查窗口大小、滑动步长和 State TTL。
 5. 检查文件 Sink 是否生成过多小文件。
-6. 增加 Kafka 分区、Flink 并行度和 TaskManager slot。
+6. 基于瓶颈证据调整 Kafka 分区、Flink 并行度和 TaskManager slot。
 
-常见优化：
-
-- 对热点商户做两阶段聚合。
-- 调整文件 Sink rolling policy。
-- 对高基数状态设置 TTL。
-- 将本地文件 Sink 替换为吞吐更高的对象存储或 ClickHouse。
+常见优化包括热点 key 两阶段聚合、调整 File Sink rolling policy、控制高基数状态 TTL。只有当现有 Sink 已被压测证明为瓶颈且出现明确存储需求时，才替换持久化方案。

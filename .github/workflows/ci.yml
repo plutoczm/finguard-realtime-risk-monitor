@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall ai_service dashboard producer scripts
+      - name: AI service, audit, case, capacity, privacy and benchmark tests
+        run: >-
+          python -m pytest -q
+          tests/test_ai_service.py
+          tests/test_ai_store.py
+          tests/test_case_management.py
+          tests/test_ai_capacity.py
+          tests/test_benchmark_ai.py
+          tests/test_ai_privacy.py
+          tests/test_ai_eval.py
+      - name: API contract smoke
+        env:
+          FINGUARD_AI_DB_PATH: ":memory:"
+        run: >-
+          python -c "from ai_service.app import app;
+          paths=app.openapi()['paths'];
+          assert '/v1/cases' in paths;
+          assert 'patch' in paths['/v1/cases/{case_id}'];
+          assert '/v1/cases/{case_id}/events' in paths;
+          assert '/v1/explanations' in paths"
+      - name: Live fallback benchmark smoke
+        env:
+          OPENAI_API_KEY: ""
+          FINGUARD_AI_DB_PATH: /tmp/finguard-ai-benchmark.sqlite3
+          FINGUARD_AI_MAX_CONCURRENCY: "2"
+        run: |
+          uvicorn ai_service.app:app --host 127.0.0.1 --port 8091 >/tmp/finguard-ai.log 2>&1 &
+          ai_pid=$!
+          trap 'kill "$ai_pid" 2>/dev/null || true' EXIT
+          python - <<'PY'
+          import time
+          import urllib.request
+          for _ in range(50):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:8091/readyz", timeout=1) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  time.sleep(0.2)
+          else:
+              raise SystemExit("AI service did not become ready")
+          PY
+          python scripts/benchmark_ai.py --requests 24 --concurrency 4 --warmup 2 --min-success-rate 1.0 --max-p95-ms 2000 --expect-source fallback
+      - name: Streaming support tests
+        run: python -m pytest -q tests/test_event_schema.py tests/test_enterprise_dataset.py tests/test_dedup_logic.py tests/test_risk_rules.py
+      - name: Multidimensional AI regression evaluation
+        run: >-
+          python -m ai_service.eval
+          --min-pass-rate 1.0
+          --min-dimension-pass-rate 1.0
+          --report reports/evals/golden.json
+      - name: Upload AI evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-${{ github.run_id }}
+          path: reports/evals/golden.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Static dashboard build
+        run: python scripts/generate_vercel_data.py
+      - name: Frontend syntax
+        run: node --check dashboard/static/app.js && node --check dashboard/static/copilot.js
+      - name: Compose config
+        run: docker compose config >/dev/null
+      - name: AI image build
+        run: docker build -f ai_service/Dockerfile -t finguard-ai-copilot:ci .
+
+  flink-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - run: mvn -q -f flink-job/pom.xml test

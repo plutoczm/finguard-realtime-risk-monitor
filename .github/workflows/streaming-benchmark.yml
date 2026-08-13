@@ -1,0 +1,95 @@
+name: streaming-benchmark
+
+on:
+  pull_request:
+    paths:
+      - "producer/**"
+      - "flink-job/**"
+      - "scripts/benchmark_streaming.py"
+      - "scripts/collect_streaming_diagnostics.py"
+      - "scripts/prepare_runtime.sh"
+      - "tests/test_streaming_benchmark.py"
+      - "docker-compose.yml"
+      - "Makefile"
+      - ".github/workflows/streaming-benchmark.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: streaming-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  end-to-end-streaming:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - run: pip install -r requirements.txt
+      - name: Package Flink job
+        run: mvn -q -f flink-job/pom.xml -DskipTests package
+      - name: Start Kafka and Flink
+        run: make up
+      - name: Wait for Kafka
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          exit 1
+      - name: Create transaction topic
+        run: docker compose exec -T kafka bash /scripts/create_topics.sh
+      - name: Submit risk job
+        run: >-
+          docker compose exec -T flink-jobmanager flink run -d
+          -c com.finguard.RiskMonitorJob
+          /opt/flink/usrlib/finguard-risk-monitor-1.0.0.jar
+          --bootstrap-servers kafka:29092
+          --transaction-topic payment_transaction_events
+          --metric-output file:///opt/finguard/data/output/realtime_metrics
+          --alert-output file:///opt/finguard/data/alerts/risk_alerts
+          --late-output file:///opt/finguard/data/late_events
+          --dead-letter-output file:///opt/finguard/data/output/dead_letter
+      - name: Run streaming benchmark
+        run: >-
+          python scripts/benchmark_streaming.py
+          --events 6500
+          --qps 100
+          --sample-interval 2
+          --drain-timeout 90
+          --max-final-lag 0
+          --min-processed-ratio 0.98
+          --max-restarts 0
+          --min-completed-checkpoints 1
+          --output reports/benchmarks/streaming-ci.json
+      - name: Collect failure diagnostics
+        if: failure()
+        run: python scripts/collect_streaming_diagnostics.py
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming-benchmark-${{ github.run_id }}
+          path: reports/benchmarks/**
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Dump runtime logs on failure
+        if: failure()
+        run: docker compose logs --tail=250
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v --remove-orphans

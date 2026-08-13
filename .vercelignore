@@ -1,59 +1,29 @@
-# Flink JAR and build artifacts
-flink-job/target/
-flink-job/pom.xml
-flink-job/src/
-
-# Docker
-docker-compose.yml
-
-# Heavy data
+# Runtime/build artifacts not needed by the static dashboard build
+flink-job/
 enterprise_data/
-data/alerts/
-data/late_events/
-data/output/
-
-# Sample data (keep the transactions.json if needed)
-
-# Python cache
-__pycache__/
-.venv/
-.runtime/
-*.pyc
-*.pyo
-
-# Conda
-environment.yml
-
-# Docs
-docs/
-
-# Tests
+data/
+ai_service/
+evals/
 tests/
-
-# Reports
+docs/
 reports/
 
-# Git
+# Local tooling and secrets
 .git/
-.gitignore
-.gitattributes
-
-# IDE
-.vscode/
-.idea/
-
-# Config
+.github/
+.venv/
+.runtime/
+__pycache__/
+*.pyc
+*.pyo
+.env
 .env.example
 Makefile
+docker-compose.yml
 
-# Scripts (keep generate_vercel_data.py)
-scripts/*.ps1
-scripts/download_*.py
-scripts/enterprise_*.ps1
-scripts/run_all.ps1
-
-# Python server (not needed for Vercel static deployment)
-dashboard/server.py
-
-# Producer
-producer/
+# Keep dashboard/, producer/ and scripts/generate_vercel_data.py because
+# the Vercel build reuses their Python aggregation/generation code.
+scripts/benchmark_ai.py
+scripts/clean.sh
+scripts/create_topics.sh
+scripts/download_enterprise_dataset.py

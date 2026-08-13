@@ -16,38 +16,31 @@ __pycache__/
 venv/
 env/
 
-# Node / dashboard verification scratch
+# Vercel / frontend build scratch
 node_modules/
 package-lock.json
-dashboard/verify-*.png
+.vercel/
 dashboard/static/api/dashboard.json
 
 # Java / Maven build output
 flink-job/target/
 *.class
 
-# Flink runtime state and generated sink data
-data/checkpoints/**
-!data/checkpoints/**/
-!data/checkpoints/**/README.md
-data/output/**
-!data/output/**/
-!data/output/**/README.md
-data/alerts/**
-!data/alerts/**/
-!data/alerts/**/README.md
-data/late_events/**
-!data/late_events/**/
-!data/late_events/**/README.md
+# Generated runtime data
+/data/checkpoints/
+/data/output/
+/data/alerts/
+/data/late_events/
+/data/sample_events/*.json
+/data/ai_copilot/
+/reports/benchmarks/*.json
 
-# Enterprise-scale datasets are reproducible but too large for GitHub.
-# Keep README, manifest, and small metadata tracked.
+# Reproducible enterprise datasets
 enterprise_data/raw/
 enterprise_data/processed/*.jsonl
 !enterprise_data/processed/*.metadata.json
 
 # IDE / OS
-.vercel/
 .env*.local
 .idea/
 .vscode/

@@ -6,10 +6,13 @@ INTERNAL_BOOTSTRAP=kafka:29092
 TRANSACTION_TOPIC=payment_transaction_events
 JAR=flink-job/target/finguard-risk-monitor-1.0.0.jar
 
-.PHONY: up down create-topics generate produce submit-job logs clean test package ps
-.PHONY: download-enterprise convert-enterprise produce-enterprise dashboard
+.PHONY: up down create-topics generate produce submit-job logs clean test package ps prepare-runtime
+.PHONY: download-enterprise convert-enterprise produce-enterprise dashboard ai ai-eval ai-docker ai-benchmark stream-benchmark
 
-up:
+prepare-runtime:
+	bash scripts/prepare_runtime.sh
+
+up: prepare-runtime
 	$(COMPOSE) up -d
 
 down:
@@ -39,10 +42,25 @@ produce-enterprise:
 dashboard:
 	$(PYTHON) dashboard/server.py --port 8090
 
+ai:
+	uvicorn ai_service.app:app --host 127.0.0.1 --port 8091
+
+ai-eval:
+	$(PYTHON) -m ai_service.eval --min-pass-rate 1.0
+
+ai-benchmark:
+	$(PYTHON) scripts/benchmark_ai.py --requests 100 --concurrency 8 --warmup 5 --output reports/benchmarks/ai-latest.json
+
+stream-benchmark:
+	$(PYTHON) scripts/benchmark_streaming.py --events 1000 --qps 100 --output reports/benchmarks/streaming-latest.json
+
+ai-docker:
+	$(COMPOSE) --profile ai up -d ai-copilot
+
 package:
 	cd flink-job && mvn -q -DskipTests package
 
-submit-job: package
+submit-job: prepare-runtime package
 	$(COMPOSE) exec flink-jobmanager flink run -d -c com.finguard.RiskMonitorJob /opt/flink/usrlib/finguard-risk-monitor-1.0.0.jar --bootstrap-servers $(INTERNAL_BOOTSTRAP) --transaction-topic $(TRANSACTION_TOPIC) --metric-output file:///opt/finguard/data/output/realtime_metrics --alert-output file:///opt/finguard/data/alerts/risk_alerts --late-output file:///opt/finguard/data/late_events --dead-letter-output file:///opt/finguard/data/output/dead_letter
 
 logs:
@@ -53,4 +71,5 @@ clean:
 
 test:
 	$(PYTHON) -m pytest -q
+	$(PYTHON) -m ai_service.eval --min-pass-rate 1.0
 	cd flink-job && mvn -q test

@@ -1,17 +1,8 @@
 {
-  "name": "finguard-dashboard",
+  "name": "finguard-static-demo",
   "version": "1.0.0",
-  "description": "FinGuard 支付交易实时风控智能监控指挥舱",
   "private": true,
   "scripts": {
-    "build": "python scripts/generate_vercel_data.py",
-    "start": ".\\start.cmd",
-    "start:lan": ".\\start.cmd lan",
-    "start:public": ".\\start.cmd public",
-    "stop": ".\\stop.cmd",
-    "dev": ".\\start.cmd local -Foreground -NoOpen"
-  },
-  "engines": {
-    "node": "24.x"
+    "build": "python scripts/generate_vercel_data.py"
   }
 }
