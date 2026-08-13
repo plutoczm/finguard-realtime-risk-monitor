@@ -6,6 +6,7 @@ on:
       - "producer/**"
       - "flink-job/**"
       - "scripts/benchmark_streaming.py"
+      - "scripts/prepare_runtime.sh"
       - "tests/test_streaming_benchmark.py"
       - "docker-compose.yml"
       - "Makefile"
@@ -38,7 +39,7 @@ jobs:
       - name: Package Flink job
         run: mvn -q -f flink-job/pom.xml -DskipTests package
       - name: Start Kafka and Flink
-        run: docker compose up -d kafka flink-jobmanager flink-taskmanager
+        run: make up
       - name: Wait for Kafka
         run: |
           for attempt in $(seq 1 60); do
