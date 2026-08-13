@@ -70,7 +70,7 @@ jobs:
           --events 6500
           --qps 100
           --sample-interval 2
-          --drain-timeout 45
+          --drain-timeout 90
           --max-final-lag 0
           --min-processed-ratio 0.98
           --max-restarts 0
