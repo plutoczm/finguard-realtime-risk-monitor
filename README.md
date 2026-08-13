@@ -1,6 +1,6 @@
 # FinGuard — Realtime Risk Engine + AI Investigation Copilot
 
-FinGuard 是一个面向支付风控场景的工程化作品：**Kafka + Flink 负责实时、确定性的风险检测，AI Risk Copilot 负责告警解释与人工调查辅助**。项目刻意把 LLM 放在硬实时决策链路之外，使模型失败、超时或不可用时不会阻塞支付风控主链路。
+FinGuard 是一个面向支付风控场景的工程化 AI 应用项目：**Kafka + Flink 负责实时、确定性的风险检测，AI Risk Copilot 负责告警解释与人工调查辅助**。LLM 被刻意放在硬实时决策链路之外，因此模型失败、超时或不可用时不会阻塞风险检测。
 
 > Portfolio focus: streaming systems, AI application engineering, structured outputs, graceful degradation, PII minimization, evaluation and CI.
 
@@ -8,7 +8,7 @@ FinGuard 是一个面向支付风控场景的工程化作品：**Kafka + Flink �
 
 ```mermaid
 flowchart LR
-    P[Transaction Producer] --> K[Kafka]
+    P[Transaction Producer] --> K[Kafka KRaft]
     K --> F[Flink Risk Engine]
     F --> M[Realtime Metrics]
     F --> A[Risk Alerts]
@@ -24,14 +24,25 @@ flowchart LR
 - **Flink rules** own deterministic, low-latency detection, event-time windows, state, deduplication and late-data handling.
 - **LLM copilot** turns structured alert evidence into analyst-facing summaries, recommended next actions and investigation steps.
 - The model **cannot authorize or reject payments**.
-- Raw user/device/merchant IDs are pseudonymized before model calls; raw IP is excluded.
-- LLM responses use a strict JSON schema and fall back to deterministic explanations on missing key, timeout, provider error or parse/schema failure.
+- Raw user/device/merchant IDs are pseudonymized before model calls; raw IP is excluded; nested evidence is recursively minimized.
+- Model output is constrained by JSON Schema and falls back to deterministic explanations on missing key, timeout, provider error or parse/schema failure.
+
+## Scope control
+
+This repository intentionally keeps a small runtime surface:
+
+```text
+Producer -> one Kafka transaction topic -> Flink -> File Sinks -> Dashboard / AI Copilot
+```
+
+The project does **not** include unused PostgreSQL, Hive/HDFS, Grafana, vector databases or Agent frameworks. Those should be introduced only when a concrete query, retrieval, orchestration or observability requirement exists.
 
 ## Main capabilities
 
 | Layer | Capability |
 |---|---|
-| Ingestion | Python producer, synthetic/enterprise AML datasets, Kafka topics |
+| Ingestion | Python producer, synthetic and public AML dataset adapters |
+| Messaging | single business Kafka topic, local single-node KRaft |
 | Streaming | Flink DataStream, Watermark, windows, keyed state, TTL, deduplication |
 | Detection | frequency, amount spike, multi-user device/card, consecutive failure, blacklist rules |
 | Reliability | checkpoint boundary, dead-letter output, late-event side output, idempotent alert IDs |
@@ -39,7 +50,7 @@ flowchart LR
 | AI safety | PII minimization, grounded-context contract, human-in-the-loop, deterministic fallback |
 | Evaluation | golden-set action/evidence checks runnable without an API key |
 | Observability | AI request/fallback/latency metrics plus Flink/Kafka operational signals |
-| Delivery | Docker Compose, Vercel dashboard, GitHub Actions Python + Java CI |
+| Delivery | Docker Compose, Vercel static demo, GitHub Actions Python + Java CI |
 
 ## Quick start
 
@@ -73,7 +84,7 @@ make ai
 # http://127.0.0.1:8091/docs
 ```
 
-Without `OPENAI_API_KEY`, the AI API remains available in deterministic fallback mode.
+Without `OPENAI_API_KEY`, the API remains available in deterministic fallback mode. On the local Dashboard, click **AI 调查** on a risk alert to call the Copilot service.
 
 Docker profile:
 
@@ -103,7 +114,7 @@ docker compose --profile ai up -d ai-copilot
 }
 ```
 
-Response contains `summary`, `recommended_action`, `confidence`, `key_evidence`, `investigation_steps`, `limitations`, `source`, `prompt_version` and `model`.
+Response fields include `summary`, `recommended_action`, `confidence`, `key_evidence`, `investigation_steps`, `limitations`, `source`, `prompt_version` and `model`.
 
 ## Evaluation
 
@@ -111,7 +122,7 @@ Response contains `summary`, `recommended_action`, `confidence`, `key_evidence`,
 make ai-eval
 ```
 
-The golden set verifies deterministic expectations such as recommended action, evidence coverage and response completeness. A production extension should track schema-valid rate, grounded-evidence rate, action agreement, fallback rate, p95 latency, model cost and analyst acceptance rate.
+The deterministic golden set verifies recommended action, evidence coverage and response completeness without external model credentials. A production-grade extension should additionally track grounded-evidence rate, schema-valid rate, action agreement, fallback rate, p95 latency, model cost and analyst acceptance rate.
 
 ## Risk rules
 
@@ -131,21 +142,23 @@ The golden set verifies deterministic expectations such as recommended action, e
 ```text
 ai_service/     FastAPI + LLM/fallback investigation copilot
 evals/          golden-set AI evaluation cases
-producer/       event generation and Kafka producers
+producer/       transaction generation and Kafka producer
 flink-job/      Java Flink real-time risk job
-dashboard/      risk monitoring UI/API
+dashboard/      risk monitoring UI with AI investigation drawer
 tests/          Python tests
 docs/           architecture, reliability, AI and interview notes
-scripts/        local operations and data tooling
+scripts/        minimal runtime/data build tooling
 ```
+
+Generated runtime data is intentionally ignored by Git. Use `make generate` and the Flink job to create local samples and sink output.
 
 ## Public dashboard
 
-The visualization-only static demo is deployed at:
+Static portfolio demo:
 
 `https://finguard-realtime-risk-monitor.vercel.app`
 
-Kafka/Flink and the AI copilot are infrastructure services; Vercel hosts the static cockpit/demo data only.
+The public site contains generated demo data and a clearly labeled static Copilot fallback preview. Real model requests are only made when the local Copilot API is running; no model key is embedded in the static site.
 
 ## Engineering docs
 
