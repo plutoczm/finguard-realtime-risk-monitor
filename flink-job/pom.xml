@@ -15,7 +15,10 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <flink.version>1.19.1</flink.version>
         <flink.kafka.version>3.2.0-1.19</flink.kafka.version>
-        <jackson.version>2.17.1</jackson.version>
+        <!-- Keep unshaded Jackson aligned with Flink 1.19.1's jackson-bom.version.
+             A newer databind beside Flink's older jackson-core can pass unit tests but fail
+             only on the cluster classpath with NoSuchMethodError. -->
+        <jackson.version>2.15.3</jackson.version>
         <junit.version>5.10.2</junit.version>
     </properties>
 
