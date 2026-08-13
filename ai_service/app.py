@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from threading import Lock
 
 from fastapi import FastAPI, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from ai_service.models import ExplainRequest, ExplainResponse, HealthResponse
 from ai_service.service import PROMPT_VERSION, RiskExplainer
@@ -14,6 +16,23 @@ app = FastAPI(
     version="0.1.0",
     description="Human-in-the-loop alert explanation and investigation API.",
 )
+
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "FINGUARD_CORS_ORIGINS",
+        "http://127.0.0.1:8090,http://localhost:8090",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
 explainer = RiskExplainer()
 
 
