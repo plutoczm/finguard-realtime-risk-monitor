@@ -24,6 +24,7 @@ import com.finguard.utils.RuleConstants;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
@@ -216,20 +217,32 @@ public class RiskMonitorJob {
         DataStream<RealtimeMetric> metrics = txnCountMetric
                 .union(amountMetric, channelSuccessRate, merchantAmountMetric, alertCountMetric, highRiskAlertMetric);
 
-        alerts
-                .map(JsonUtils::toJson)
+        SingleOutputStreamOperator<String> alertJson = alerts
+                .map((RiskAlert alert) -> JsonUtils.toJson(alert))
+                .returns(Types.STRING)
+                .uid("serialize-risk-alerts")
+                .name("serialize risk alerts");
+        alertJson
                 .sinkTo(FileSinkFactory.jsonLineSink(alertOutput))
                 .uid("file-sink-risk-alerts")
                 .name("file sink risk alerts");
 
-        metrics
-                .map(JsonUtils::toJson)
+        SingleOutputStreamOperator<String> metricJson = metrics
+                .map((RealtimeMetric metric) -> JsonUtils.toJson(metric))
+                .returns(Types.STRING)
+                .uid("serialize-realtime-metrics")
+                .name("serialize realtime metrics");
+        metricJson
                 .sinkTo(FileSinkFactory.jsonLineSink(metricOutput))
                 .uid("file-sink-realtime-metrics")
                 .name("file sink realtime metrics");
 
-        onTimeEvents.getSideOutput(lateEventTag)
-                .map(JsonUtils::toJson)
+        SingleOutputStreamOperator<String> lateEventJson = onTimeEvents.getSideOutput(lateEventTag)
+                .map((TransactionEvent event) -> JsonUtils.toJson(event))
+                .returns(Types.STRING)
+                .uid("serialize-late-events")
+                .name("serialize late events");
+        lateEventJson
                 .sinkTo(FileSinkFactory.jsonLineSink(lateOutput))
                 .uid("file-sink-late-events")
                 .name("file sink late events");
