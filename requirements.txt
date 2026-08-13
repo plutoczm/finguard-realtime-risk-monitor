@@ -1,9 +1,13 @@
--r ai_service/requirements.txt
-
 # Data generation / ingestion
 faker>=25.0
 jsonschema>=4.22
 kafka-python>=2.0
+
+# AI application service
+fastapi>=0.116,<1
+uvicorn>=0.35,<1
+pydantic>=2.11,<3
+openai
 
 # Tests
 pytest>=8.2
