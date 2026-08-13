@@ -23,6 +23,7 @@ docker-compose.yml
 
 # Keep dashboard/, producer/ and scripts/generate_vercel_data.py because
 # the Vercel build reuses their Python aggregation/generation code.
+scripts/benchmark_ai.py
 scripts/clean.sh
 scripts/create_topics.sh
 scripts/download_enterprise_dataset.py

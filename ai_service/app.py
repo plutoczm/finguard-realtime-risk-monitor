@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from collections import Counter
 from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -31,8 +32,8 @@ from ai_service.store import InvestigationStore
 
 app = FastAPI(
     title="FinGuard AI Risk Copilot",
-    version="0.3.0",
-    description="Human-in-the-loop risk investigation, audit, case management and feedback API.",
+    version="0.4.0",
+    description="Human-in-the-loop risk investigation, case operations, capacity protection and feedback API.",
 )
 
 allowed_origins = [
@@ -62,38 +63,67 @@ class RuntimeMetrics:
         self.requests = 0
         self.fallbacks = 0
         self.total_latency_ms = 0.0
+        self.degradations: Counter[str] = Counter()
 
-    def observe(self, source: str, latency_ms: float) -> None:
+    def observe(self, source: str, latency_ms: float, degradation_reason: str | None) -> None:
         with self.lock:
             self.requests += 1
             self.fallbacks += int(source == "fallback")
             self.total_latency_ms += latency_ms
+            if degradation_reason:
+                self.degradations[degradation_reason] += 1
 
-    def render(self, quality: QualitySummary, cases: CaseSummary) -> str:
+    def render(
+        self,
+        quality: QualitySummary,
+        cases: CaseSummary,
+        *,
+        provider_inflight: int,
+        provider_capacity: int,
+    ) -> str:
         with self.lock:
             avg = self.total_latency_ms / self.requests if self.requests else 0.0
-            return (
-                "# TYPE finguard_ai_requests_total counter\n"
-                f"finguard_ai_requests_total {self.requests}\n"
-                "# TYPE finguard_ai_fallback_total counter\n"
-                f"finguard_ai_fallback_total {self.fallbacks}\n"
-                "# TYPE finguard_ai_latency_ms_avg gauge\n"
-                f"finguard_ai_latency_ms_avg {avg:.3f}\n"
-                "# TYPE finguard_ai_feedback_total gauge\n"
-                f"finguard_ai_feedback_total {quality.feedback_count}\n"
-                "# TYPE finguard_ai_recommendation_acceptance_ratio gauge\n"
-                f"finguard_ai_recommendation_acceptance_ratio {quality.recommendation_acceptance_rate:.4f}\n"
-                "# TYPE finguard_ai_false_positive_ratio gauge\n"
-                f"finguard_ai_false_positive_ratio {quality.false_positive_rate:.4f}\n"
-                "# TYPE finguard_cases_open gauge\n"
-                f"finguard_cases_open {cases.open_count}\n"
-                "# TYPE finguard_cases_investigating gauge\n"
-                f"finguard_cases_investigating {cases.investigating_count}\n"
-                "# TYPE finguard_cases_sla_breached gauge\n"
-                f"finguard_cases_sla_breached {cases.sla_breached_count}\n"
-                "# TYPE finguard_cases_unassigned gauge\n"
-                f"finguard_cases_unassigned {cases.unassigned_count}\n"
+            lines = [
+                "# TYPE finguard_ai_requests_total counter",
+                f"finguard_ai_requests_total {self.requests}",
+                "# TYPE finguard_ai_fallback_total counter",
+                f"finguard_ai_fallback_total {self.fallbacks}",
+                "# TYPE finguard_ai_latency_ms_avg gauge",
+                f"finguard_ai_latency_ms_avg {avg:.3f}",
+                "# TYPE finguard_ai_provider_inflight gauge",
+                f"finguard_ai_provider_inflight {provider_inflight}",
+                "# TYPE finguard_ai_provider_capacity gauge",
+                f"finguard_ai_provider_capacity {provider_capacity}",
+                "# TYPE finguard_ai_degradation_total counter",
+            ]
+            for reason in (
+                "missing_credentials",
+                "provider_error",
+                "circuit_open",
+                "bulkhead_saturated",
+            ):
+                lines.append(
+                    f'finguard_ai_degradation_total{{reason="{reason}"}} {self.degradations[reason]}'
+                )
+            lines.extend(
+                [
+                    "# TYPE finguard_ai_feedback_total gauge",
+                    f"finguard_ai_feedback_total {quality.feedback_count}",
+                    "# TYPE finguard_ai_recommendation_acceptance_ratio gauge",
+                    f"finguard_ai_recommendation_acceptance_ratio {quality.recommendation_acceptance_rate:.4f}",
+                    "# TYPE finguard_ai_false_positive_ratio gauge",
+                    f"finguard_ai_false_positive_ratio {quality.false_positive_rate:.4f}",
+                    "# TYPE finguard_cases_open gauge",
+                    f"finguard_cases_open {cases.open_count}",
+                    "# TYPE finguard_cases_investigating gauge",
+                    f"finguard_cases_investigating {cases.investigating_count}",
+                    "# TYPE finguard_cases_sla_breached gauge",
+                    f"finguard_cases_sla_breached {cases.sla_breached_count}",
+                    "# TYPE finguard_cases_unassigned gauge",
+                    f"finguard_cases_unassigned {cases.unassigned_count}",
+                ]
             )
+            return "\n".join(lines) + "\n"
 
 
 metrics = RuntimeMetrics()
@@ -107,6 +137,8 @@ def healthz() -> HealthResponse:
         model=explainer.model,
         prompt_version=PROMPT_VERSION,
         provider_circuit_open=explainer.circuit_open,
+        provider_inflight=explainer.provider_inflight,
+        provider_max_concurrency=explainer.max_concurrency,
     )
 
 
@@ -133,7 +165,7 @@ def explain(request: ExplainRequest, response: Response) -> ExplainResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail="audit store unavailable") from exc
-    metrics.observe(result.source, latency_ms)
+    metrics.observe(result.source, latency_ms, result.degradation_reason)
     response.headers["X-Request-ID"] = request_id
     return ExplainResponse(
         request_id=request_id,
@@ -241,6 +273,11 @@ def list_case_events(case_id: str) -> list[CaseEvent]:
 @app.get("/metrics")
 def prometheus_metrics() -> Response:
     return Response(
-        content=metrics.render(store.quality_summary(), store.case_summary()),
+        content=metrics.render(
+            store.quality_summary(),
+            store.case_summary(),
+            provider_inflight=explainer.provider_inflight,
+            provider_capacity=explainer.max_concurrency,
+        ),
         media_type="text/plain; version=0.0.4",
     )

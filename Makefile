@@ -7,7 +7,7 @@ TRANSACTION_TOPIC=payment_transaction_events
 JAR=flink-job/target/finguard-risk-monitor-1.0.0.jar
 
 .PHONY: up down create-topics generate produce submit-job logs clean test package ps
-.PHONY: download-enterprise convert-enterprise produce-enterprise dashboard ai ai-eval ai-docker
+.PHONY: download-enterprise convert-enterprise produce-enterprise dashboard ai ai-eval ai-docker ai-benchmark
 
 up:
 	$(COMPOSE) up -d
@@ -44,6 +44,9 @@ ai:
 
 ai-eval:
 	$(PYTHON) -m ai_service.eval --min-pass-rate 1.0
+
+ai-benchmark:
+	$(PYTHON) scripts/benchmark_ai.py --requests 100 --concurrency 8 --warmup 5 --output reports/benchmarks/ai-latest.json
 
 ai-docker:
 	$(COMPOSE) --profile ai up -d ai-copilot

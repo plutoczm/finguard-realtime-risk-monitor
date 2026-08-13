@@ -4,10 +4,10 @@ import hashlib
 import json
 import os
 import time
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from typing import Any
 
-from ai_service.models import ExplainRequest, RiskExplanation
+from ai_service.models import DegradationReason, ExplainRequest, RiskExplanation
 
 PROMPT_VERSION = "risk-investigator-v2"
 
@@ -69,7 +69,6 @@ def _tokenize(value: Any, prefix: str) -> str | None:
 
 
 def _sanitize_evidence(value: Any, key: str = "") -> Any:
-    """Recursively redact identifiers that may be embedded in rule evidence."""
     normalized = key.lower()
     if isinstance(value, dict):
         return {str(k): _sanitize_evidence(v, str(k)) for k, v in value.items()}
@@ -142,11 +141,15 @@ def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
     }
 
 
-def fallback_explanation(request: ExplainRequest, limitation: str | None = None) -> RiskExplanation:
+def fallback_explanation(
+    request: ExplainRequest,
+    limitation: str | None = None,
+    degradation_reason: DegradationReason | None = None,
+) -> RiskExplanation:
     alert = request.alert
     rule_id = str(alert.get("rule_id") or "UNKNOWN")
     level = str(alert.get("risk_level") or "UNKNOWN").upper()
-    reason = str(alert.get("reason") or alert.get("rule_name") or "风险规则命中")
+    reason = str(alert.get("reason") or alert.get("rule_name") or "风鍩规则命中")
     evidence = _sanitize_evidence(alert.get("evidence") or {})
 
     evidence_items = [f"rule_id={rule_id}", f"risk_level={level}", reason]
@@ -188,6 +191,7 @@ def fallback_explanation(request: ExplainRequest, limitation: str | None = None)
         investigation_steps=steps,
         limitations=limitations,
         source="fallback",
+        degradation_reason=degradation_reason,
         prompt_version=PROMPT_VERSION,
         model=None,
     )
@@ -201,6 +205,8 @@ class RiskExplainer:
         timeout_seconds: float = 8.0,
         failure_threshold: int | None = None,
         cooldown_seconds: float | None = None,
+        max_concurrency: int | None = None,
+        bulkhead_wait_ms: float | None = None,
         client: Any | None = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
@@ -208,7 +214,14 @@ class RiskExplainer:
         self.timeout_seconds = timeout_seconds
         self.failure_threshold = max(1, failure_threshold or int(os.getenv("FINGUARD_AI_FAILURE_THRESHOLD", "3")))
         self.cooldown_seconds = max(1.0, cooldown_seconds or float(os.getenv("FINGUARD_AI_COOLDOWN_SECONDS", "30")))
+        configured_concurrency = max_concurrency if max_concurrency is not None else int(os.getenv("FINGUARD_AI_MAX_CONCURRENCY", "4"))
+        configured_wait_ms = bulkhead_wait_ms if bulkhead_wait_ms is not None else float(os.getenv("FINGUARD_AI_BULKHEAD_WAIT_MS", "25"))
+        self.max_concurrency = max(1, configured_concurrency)
+        self.bulkhead_wait_seconds = max(0.0, configured_wait_ms) / 1000.0
         self._lock = Lock()
+        self._inflight_lock = Lock()
+        self._provider_slots = BoundedSemaphore(self.max_concurrency)
+        self._provider_inflight = 0
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
         self._client = client
@@ -230,6 +243,11 @@ class RiskExplainer:
         with self._lock:
             return time.monotonic() < self._circuit_open_until
 
+    @property
+    def provider_inflight(self) -> int:
+        with self._inflight_lock:
+            return self._provider_inflight
+
     def _record_success(self) -> None:
         with self._lock:
             self._consecutive_failures = 0
@@ -241,11 +259,37 @@ class RiskExplainer:
             if self._consecutive_failures >= self.failure_threshold:
                 self._circuit_open_until = time.monotonic() + self.cooldown_seconds
 
+    def _enter_provider(self) -> bool:
+        acquired = self._provider_slots.acquire(timeout=self.bulkhead_wait_seconds)
+        if not acquired:
+            return False
+        with self._inflight_lock:
+            self._provider_inflight += 1
+        return True
+
+    def _leave_provider(self) -> None:
+        with self._inflight_lock:
+            self._provider_inflight -= 1
+        self._provider_slots.release()
+
     def explain(self, request: ExplainRequest) -> RiskExplanation:
         if not self.llm_enabled:
-            return fallback_explanation(request)
+            return fallback_explanation(
+                request,
+                degradation_reason="missing_credentials",
+            )
         if self.circuit_open:
-            return fallback_explanation(request, limitation="LLM circuit breaker open; provider calls temporarily paused.")
+            return fallback_explanation(
+                request,
+                limitation="LLM circuit breaker open; provider calls temporarily paused.",
+                degradation_reason="circuit_open",
+            )
+        if not self._enter_provider():
+            return fallback_explanation(
+                request,
+                limitation="LLM bulkhead saturated; request served by deterministic fallback.",
+                degradation_reason="bulkhead_saturated",
+            )
 
         try:
             payload = sanitize_context(request)
@@ -267,6 +311,7 @@ class RiskExplainer:
             return RiskExplanation(
                 **parsed,
                 source="llm",
+                degradation_reason=None,
                 prompt_version=PROMPT_VERSION,
                 model=self.model,
             )
@@ -275,4 +320,7 @@ class RiskExplainer:
             return fallback_explanation(
                 request,
                 limitation=f"LLM unavailable; fallback activated ({exc.__class__.__name__}).",
+                degradation_reason="provider_error",
             )
+        finally:
+            self._leave_provider()
