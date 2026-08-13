@@ -15,12 +15,24 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <flink.version>1.19.1</flink.version>
         <flink.kafka.version>3.2.0-1.19</flink.kafka.version>
-        <!-- Keep unshaded Jackson aligned with Flink 1.19.1's jackson-bom.version.
-             A newer databind beside Flink's older jackson-core can pass unit tests but fail
-             only on the cluster classpath with NoSuchMethodError. -->
+        <!-- Flink 1.19.1 manages unshaded Jackson at 2.15.3. Keep the entire
+             application Jackson family on that line so the user JAR cannot mix a
+             newer databind with an older cluster jackson-core at runtime. -->
         <jackson.version>2.15.3</jackson.version>
         <junit.version>5.10.2</junit.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -48,7 +60,6 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
