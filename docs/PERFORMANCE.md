@@ -26,7 +26,7 @@ make stream-benchmark
 
 - requested events/QPS and producer process achieved QPS;
 - Kafka `finguard-risk-monitor` consumer-group lag, including peak and final lag;
-- Kafka-source `numRecordsOut` delta and processed ratio;
+- Kafka-source vertex `metrics.write-records` delta and processed ratio;
 - maximum Flink `backPressuredTimeMsPerSecond` and `busyTimeMsPerSecond` observed across vertices;
 - `lastCheckpointDuration`, completed/failed checkpoint counts and latest checkpoint duration;
 - Flink restart delta;
@@ -34,6 +34,8 @@ make stream-benchmark
 - commit SHA, Flink version, job ID and source vertex name.
 
 The benchmark gates final lag, processed ratio and restart count. Optional gates can also require completed checkpoints or bound observed backpressure.
+
+The source processed-count intentionally comes from the job-detail vertex I/O counters rather than relying on `numRecordsOut` being registered immediately on a newly started aggregated-metrics endpoint. Backpressure/busy-time still use Flink's aggregated task-metrics surface.
 
 ## End-to-end CI evidence
 
@@ -45,7 +47,30 @@ The benchmark gates final lag, processed ratio and restart count. Optional gates
 4. at least one checkpoint completes;
 5. a JSON benchmark artifact is retained for inspection.
 
-This workflow validates the measurement path and reliability baseline. It is **not** a saturation test or capacity-limit claim.
+Failure runs also retain a diagnostic archive with Flink job state, exceptions, checkpoints and available vertex metrics. This turns integration failures into inspectable evidence instead of a generic red CI status.
+
+### Current CI reliability baseline
+
+Streaming benchmark run 9 on the GitHub-hosted Ubuntu runner used 6,500 events at a requested 100 QPS and passed all reliability gates:
+
+| Signal | Observed |
+|---|---:|
+| Producer achieved QPS | 90.963 |
+| Source processed records | 6,500 / 6,500 |
+| Processed ratio | 1.0000 |
+| Peak Kafka consumer-group lag | 1,787 |
+| Final Kafka consumer-group lag | 0 |
+| Max observed backpressure | 0 ms/s |
+| Max observed busy time | 1,000 ms/s |
+| Flink restart delta | 0 |
+| Completed checkpoints | 2 |
+| Failed checkpoints | 0 |
+| Max observed checkpoint duration | 482 ms |
+| Latest completed checkpoint duration | 311 ms |
+
+This result is a **reliability/regression baseline**, not a capacity limit. The runner is ephemeral, the workload is small, and only one requested QPS level is exercised. It is valid evidence that the real Producer → Kafka → Flink path can process and drain the smoke workload without restart while checkpointing; it is not evidence that 100 QPS is the system maximum or a production SLA.
+
+The E2E workflow also found two cluster-only defects that unit tests had not exposed: a Jackson binary-version conflict and an implicit Map serialization type boundary that allowed `RealtimeMetric` to hit a `RiskAlert` cast. Both were fixed in the runtime dependency/type boundaries rather than hidden by relaxing benchmark gates.
 
 ## How to produce resume-grade numbers
 
