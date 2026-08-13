@@ -1,146 +1,94 @@
-# FinGuard 面试问答
+# FinGuard 面试问答（AI 应用开发岗）
 
-## 1. 项目整体
+## 1. 项目定位
 
-1. Q：FinGuard 是什么项目？  
-A：FinGuard 是一个支付交易实时风控项目，用 Kafka 接入交易事件，用 Flink 做事件时间窗口、状态计算、去重、迟到数据处理和风险规则告警，默认将指标与告警写入文件 Sink。
+### Q1：FinGuard 是什么？
+FinGuard 是一个支付交易实时风险监控系统。Kafka + Flink 负责确定性的低延迟风险检测，AI Risk Copilot 负责把结构化告警转换为人工分析员可读的解释、证据摘要和调查步骤。
 
-2. Q：核心链路是什么？  
-A：Python Producer 生成交易事件，写入 Kafka `payment_transaction_events`，Flink `RiskMonitorJob` 消费后输出 `realtime_metrics`、`risk_alerts`、`late_events` 和 `dead_letter` 文件。
+### Q2：为什么不是直接让 LLM 判断一笔交易是否欺诈？
+支付授权是高风险、低延迟、强可解释场景。LLM 存在延迟抖动、供应商故障和生成不确定性，因此不应成为硬实时控制面的单点依赖。项目把 LLM 放在检测之后做 decision support，主链路仍由规则和流计算保证确定性。
 
-3. Q：这个项目和普通规则 Demo 有什么区别？  
-A：它不仅实现规则，还覆盖乱序、Watermark、窗口、Keyed State、TTL、Checkpoint、迟到旁路、重复事件、文件 Sink 和一致性边界。
+### Q3：项目最核心的工程取舍是什么？
+不是“用了多少组件”，而是把职责边界切清楚：Kafka 承载事件日志，Flink 处理状态和时间语义，File Sink 提供最小可运行输出，Dashboard 做可视化，AI Copilot 只做解释与调查辅助。
 
-4. Q：这个项目能写进简历的亮点是什么？  
-A：Kafka + Flink 实时链路、8 条支付风控规则、事件时间与 Watermark、状态去重、Checkpoint 容错、Windows Docker 本地可运行、完整文档和测试。
+## 2. 实时链路
 
-## 2. Kafka
+### Q4：为什么用 Kafka？
+需要把事件生产与实时计算解耦，并支持按 key 分区、积压缓冲和重放。当前只创建 `payment_transaction_events` 一个业务 Topic，因为其他输出还没有真实 Kafka 消费方。
 
-5. Q：为什么用 Kafka？  
-A：Kafka 提供高吞吐、持久化、可重放、分区扩展和消费者解耦，适合承载支付交易事件流。
+### Q5：为什么 Kafka 只有一个 Topic？
+当前运行代码只消费交易事件，告警、指标、迟到和死信由 Flink File Sink 输出。如果提前创建一堆“未来可能用到”的 Topic，只会增加配置和解释成本；等真实下游出现再拆分。
 
-6. Q：Kafka 分区键怎么设计？  
-A：默认按 `user_id` 写入，因为用户维度规则最多；设备、银行卡、商户维度在 Flink 内部再 `keyBy` 重分区。
+### Q6：为什么使用 KRaft 而不是 ZooKeeper？
+本地开发只需要一个 Kafka 节点，因此使用 KRaft combined mode 可以减少一个基础设施服务。生产环境不会照搬这个单节点拓扑，而应使用独立 controller/broker 和多副本配置。
 
-7. Q：如何保证同一用户事件局部有序？  
-A：Producer 使用同一 `user_id` 作为 key，同一 key 会进入同一 Kafka 分区，在单分区内 Kafka 保证顺序。
+### Q7：Event Time 和 Processing Time 有什么区别？
+Event Time 是交易真实发生时间，Processing Time 是算子处理时间。风控窗口依赖交易发生顺序，因此使用 Event Time，避免 Kafka 延迟或消费抖动改变窗口归属。
 
-8. Q：Topic 为什么要拆分？  
-A：交易、用户行为、告警、指标、迟到、死信语义不同，拆分 Topic 有利于权限、扩容、保留策略和下游消费。
+### Q8：Watermark 太短或太长分别有什么问题？
+太短会让正常乱序事件过早变成迟到数据；太长会增加窗口完成和告警输出延迟。项目默认容忍 60 秒乱序，并把严重迟到数据旁路输出。
 
-9. Q：Kafka 消息会不会重复？  
-A：可能会。Producer 重试、Flink 恢复、手动重放都可能带来重复，所以项目用 `event_id` 做输入去重，用 `alert_id` 做告警幂等。
+### Q9：如何处理重复事件？
+按 `event_id` keyBy，用带 TTL 的 Keyed State 记录是否已经处理。这样能覆盖 Producer 重试、重放和恢复过程中可能出现的重复。
 
-10. Q：消息积压怎么办？  
-A：先看 consumer lag，再看 Flink 反压、并行度、Kafka 分区数、热点 key 和 Sink 吞吐。处理方式包括扩分区、提高并行度、优化状态和 Sink。
+### Q10：项目是否端到端 exactly-once？
+不夸大全链路。Kafka Source offset、Flink state 和 checkpoint-aware File Sink 有明确的一致性恢复边界；下游仍应使用稳定 `alert_id` 做幂等。
 
-## 3. Flink
+## 3. AI Copilot
 
-11. Q：为什么用 Flink？  
-A：Flink 原生支持事件时间、Watermark、低延迟有状态计算、窗口、Checkpoint 和 Exactly-once 状态恢复，适合实时风控。
+### Q11：LLM 的输入是什么？
+输入是结构化 `RiskAlert`、最小化交易上下文和最多 20 条近期事件，而不是整份用户画像或原始日志。
 
-12. Q：Flink 和 Spark Streaming 的区别？  
-A：Flink 是原生流处理，事件级低延迟和状态能力更强；传统 Spark Streaming 是微批模型，延迟和事件时间处理方式不同。
+### Q12：如何避免把敏感信息直接发给模型？
+在模型调用前做 PII minimization：用户、设备、商户等标识符转换为不可逆短哈希引用；原始 IP 不发送；`evidence` 内部也递归处理 `_id` 和 IP 字段。
 
-13. Q：Event Time 和 Processing Time 区别？  
-A：Event Time 是事件真实发生时间，Processing Time 是算子处理时间。风控窗口应使用 Event Time，避免 Kafka 延迟改变窗口归属。
+### Q13：如何降低幻觉？
+系统 prompt 明确要求只能使用提供的告警上下文，不允许引入外部事实或因果结论；输出必须包含 `key_evidence` 和 `limitations`。这不是从根本上消灭幻觉，而是把生成约束成可审计的调查辅助。
 
-14. Q：Watermark 是什么？  
-A：Watermark 是 Flink 对事件时间进度的估计，用来判断窗口何时触发，并容忍一定程度的乱序。
+### Q14：为什么用 Structured Outputs？
+下游 UI/API 需要稳定字段，而不是解析自然语言。模型输出被限制为 JSON Schema，必须返回 `summary`、`recommended_action`、`confidence`、`key_evidence`、`investigation_steps` 和 `limitations`。
 
-15. Q：Watermark 太短有什么问题？  
-A：乱序事件更容易被判定为迟到，窗口结果不完整。
+### Q15：模型超时或不可用怎么办？
+`RiskExplainer` 捕获缺少 API Key、超时、供应商异常、JSON 解析和 Schema 校验错误，自动切到确定性 fallback。fallback 根据规则 ID 和风险等级给出固定格式的解释和调查步骤，因此 AI 故障不会让风控工作流不可用。
 
-16. Q：Watermark 太长有什么问题？  
-A：窗口触发和告警输出延迟增加。
+### Q16：为什么 fallback 不是简单返回 500？
+这个接口服务的是人工处置流程。模型增强能力可以降级，但基础解释能力不能消失；因此 fallback 是业务级 graceful degradation，而不是单纯技术异常处理。
 
-17. Q：迟到数据怎么处理？  
-A：超过当前 Watermark 的事件进入 side output，并写入 `data/late_events/`，用于审计、补偿和延迟质量分析。
+### Q17：如何做 prompt 版本管理？
+每个响应都返回 `prompt_version`。这样评测结果、线上异常和人工反馈可以定位到具体 prompt 版本，避免修改 prompt 后无法解释结果变化。
 
-18. Q：窗口怎么选？  
-A：固定周期统计用滚动窗口，例如 R001；最近一段时间内持续监测用滑动窗口，例如 R002、R003、R004、R008。
+### Q18：为什么不引入 LangChain/Agent/向量数据库？
+当前任务只是基于结构化告警生成调查解释，不需要复杂工具编排，也没有检索知识库需求。直接使用模型 SDK + Pydantic + JSON Schema 更短、更透明、更容易测试。出现真实 RAG 或多工具调用需求后再引入框架。
 
-19. Q：Tumbling Window 和 Sliding Window 区别？  
-A：滚动窗口不重叠，适合周期统计；滑动窗口可重叠，适合“最近 N 分钟”类规则。
+## 4. AI 评测与可观测性
 
-20. Q：为什么要用 Keyed State？  
-A：风控需要按用户、设备、卡、商户维护上下文，例如连续失败次数、历史均值、去重标记。
+### Q19：AI 功能怎么测试？
+分两层：单元测试验证脱敏、fallback 和无 Key 场景；golden set 验证推荐动作、关键证据覆盖和输出完整性。默认评测不调用外部模型，所以 CI 可重复执行。
 
-21. Q：Keyed State 存了什么？  
-A：`event_id` 去重标记、用户连续失败次数、用户历史金额统计、商户历史窗口金额统计等。
+### Q20：为什么 golden set 不能说明模型已经“准确”？
+当前集合规模很小，只能验证输出契约和基础行为。真实上线需要人工标注的风险案例，并分别统计 grounded evidence rate、action agreement、schema-valid rate、fallback rate 和人工采纳率。
 
-22. Q：State TTL 为什么需要？  
-A：防止用户、设备、卡等高基数状态无限增长，降低 Checkpoint 和恢复成本。
+### Q21：线上最重要的 AI 指标是什么？
+至少要看 p50/p95 latency、fallback rate、结构化输出成功率、token/cost、人工采纳率、证据一致性和不同规则/风险等级下的错误分布。
 
-23. Q：Checkpoint 是什么？  
-A：Checkpoint 是 Flink 的容错快照，保存 Kafka offset、算子状态、窗口状态和 Sink 提交状态。
+### Q22：`confidence` 能直接当概率吗？
+不能。当前 confidence 是模型/策略输出的辅助字段，没有经过概率校准。生产中若要用于排序或阈值决策，需要单独做校准与验证。
 
-24. Q：Savepoint 是什么？  
-A：Savepoint 是人为触发的状态快照，适合作业升级、迁移、回滚和调整并行度。
+## 5. 工程化
 
-25. Q：Flink 如何实现 exactly-once？  
-A：Flink 通过 Checkpoint 协调 Source Offset、算子状态和支持事务或提交协议的 Sink。
+### Q23：为什么 AI 服务单独做 FastAPI？
+把模型依赖、输入输出契约、降级策略和监控封装成独立边界，便于 Dashboard、工单系统或其他服务复用，也便于独立压测和替换模型供应商。
 
-26. Q：你的项目是否端到端 exactly-once？  
-A：Kafka 到 Flink 状态层面可以达到 exactly-once；文件输出依赖 checkpoint-aware File Sink；下游读取仍需基于 `event_id` 或 `alert_id` 做幂等，因此不夸大全链路绝对 exactly-once。
+### Q24：CI 检查什么？
+Python job 做依赖安装、compileall、pytest 和 golden-set eval；Java job 单独运行 Flink Maven 测试。AI 评测默认不需要密钥，避免 CI 依赖外部供应商。
 
-## 4. 规则与状态
+### Q25：为什么没有把 PostgreSQL、Hive、Grafana、Schema Registry 全加上？
+因为它们目前没有进入核心闭环。作品项目更重要的是每一个依赖都能回答“谁在用、为什么需要、失败怎么办”。只有出现持久查询、数据治理或监控需求时再增加相应组件。
 
-27. Q：event_id 去重怎么做？  
-A：对流按 `event_id` keyBy，使用 `ValueState<Boolean>` 记录是否处理过，TTL 为 24 小时，重复事件直接丢弃。
+## 6. 下一步真实演进
 
-28. Q：连续失败支付怎么判断？  
-A：按 `user_id` keyBy，`FAILED` 时状态加 1，非失败时清零，达到 5 次输出 R005 告警。
+### Q26：如果要继续做成更强的 AI 应用，下一步是什么？
+优先级不是继续加基础设施，而是：把 Copilot 接入告警详情 UI；扩大人工标注 eval 数据集；记录模型延迟/成本/接受率；加入请求级 trace；增加 prompt injection 与敏感字段测试；最后再根据真实需求考虑规则知识 RAG 或工具调用。
 
-29. Q：黑名单设备怎么处理？  
-A：当前版本读取事件字段 `is_black_device`，命中即输出 R006。生产可扩展为 Kafka 黑名单流 + Broadcast State。
-
-30. Q：商户突增怎么判断？  
-A：先按商户做 5 分钟窗口金额，再用 Keyed State 保存历史窗口均值，当前窗口金额超过历史均值 3 倍输出 R008。
-
-31. Q：用户金额突增怎么判断？  
-A：按用户保存历史成功交易金额均值，当前成功交易金额超过历史均值 5 倍且历史样本足够时输出 R007。
-
-32. Q：告警重复怎么办？  
-A：生成稳定 `alert_id`。单事件规则基于 `rule_id + event_id`，窗口规则基于 `rule_id + key + window_start + window_end`，下游按 `alert_id` 去重。
-
-33. Q：如何避免告警风暴？  
-A：增加告警冷却状态、合并窗口告警、按用户或商户聚合摘要、设置风险等级策略、下游使用 `alert_id` 和规则版本去重。
-
-## 5. 运维与扩展
-
-34. Q：高峰流量怎么压测？  
-A：使用 `kafka_producer.py --mode peak --qps 1000 --duration 600` 提高 QPS，观察 Kafka lag、Flink records/s、Checkpoint 和 Sink 输出。
-
-35. Q：反压怎么排查？  
-A：先看 Flink UI backpressure、busy time 和 checkpoint，再看 Kafka lag、热点 key、状态大小、Sink 吞吐和 TaskManager 资源。
-
-36. Q：状态过大怎么办？  
-A：设置 TTL、减少明细状态、使用聚合状态、启用 RocksDB、拆分热点 key、缩短窗口或调大滑动步长。
-
-37. Q：Sink 写入失败怎么办？  
-A：依赖 Checkpoint 恢复；外部数据库 Sink 要用主键幂等或事务；文件 Sink 下游不要读取 in-progress 文件。
-
-38. Q：Kafka 消费失败怎么办？  
-A：Flink 作业从最近 Checkpoint 恢复 Kafka offset；如果长时间失败，需要检查 Kafka 可用性、Topic 权限和反序列化错误。
-
-39. Q：如何扩展到更高 QPS？  
-A：增加 Kafka 分区，提高 Flink 并行度和 TaskManager slot，优化 key 分布，使用批量/异步 Sink，并对热点商户做两阶段聚合。
-
-40. Q：项目最大难点是什么？  
-A：难点不是单条规则，而是乱序、迟到、重复、状态膨胀、恢复一致性、反压和告警幂等这些真实流处理问题的组合。
-
-41. Q：这个项目和离线数仓项目有什么区别？  
-A：离线数仓关注 T+1 汇总和历史分析；实时风控关注秒级发现、事件时间语义、有状态规则和故障恢复。
-
-42. Q：如何支持规则热更新？  
-A：将规则配置写入独立 Kafka Topic，Flink 使用 Broadcast State 广播到所有并行算子，并给规则配置加版本号。
-
-43. Q：为什么默认用文件 Sink？  
-A：文件 Sink 依赖少，保证本地最小链路可跑。数据库和 Dashboard 可以通过 SQL 文件扩展。
-
-44. Q：ClickHouse 幂等怎么做？  
-A：可以用 `alert_id` 作为去重键，结合 `ReplacingMergeTree` 或查询侧 `argMax` 去重，但它是最终一致，不应说成强 exactly-once。
-
-45. Q：上生产还缺什么？  
-A：Schema Registry、认证鉴权、多副本 Kafka、持久化 Checkpoint、规则平台、可观测告警、压测、CI/CD、灾备和数据治理。
+### Q27：如果要扩展实时检测能力呢？
+可以把规则阈值从代码迁移为版本化配置，并通过广播状态热更新；再基于压测结果调整 Kafka 分区和 Flink 并行度，而不是先假设需要更多中间件。
