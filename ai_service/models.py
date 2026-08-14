@@ -27,6 +27,9 @@ CasePriority = Literal["low", "medium", "high", "critical"]
 DegradationReason = Literal[
     "missing_credentials",
     "provider_error",
+    "provider_timeout",
+    "provider_rate_limited",
+    "invalid_model_output",
     "circuit_open",
     "bulkhead_saturated",
 ]
