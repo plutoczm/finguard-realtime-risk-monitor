@@ -7,9 +7,11 @@ import time
 from threading import BoundedSemaphore, Lock
 from typing import Any
 
+from pydantic import ValidationError
+
 from ai_service.models import DegradationReason, ExplainRequest, RiskExplanation
 
-PROMPT_VERSION = "risk-investigator-v2"
+PROMPT_VERSION = "risk-investigator-v3"
 
 SYSTEM_PROMPT = """You are FinGuard's risk-investigation copilot.
 Your job is decision support for a human risk analyst, not autonomous payment authorization.
@@ -25,6 +27,20 @@ RULE_ACTIONS = {
     "R002": "step_up_auth",
     "R008": "manual_review",
 }
+
+# These are outcome/supervision fields, not event-time investigation features. Keeping them
+# out of model/audit context prevents target leakage and makes offline/live eval meaningful.
+POST_EVENT_LABEL_FIELDS = frozenset(
+    {
+        "risk_label",
+        "fraud_label",
+        "chargeback_label",
+        "analyst_verdict",
+        "resolution_verdict",
+        "ground_truth",
+        "target_label",
+    }
+)
 
 EXPLANATION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -70,10 +86,18 @@ def _tokenize(value: Any, prefix: str) -> str | None:
 
 def _sanitize_evidence(value: Any, key: str = "") -> Any:
     normalized = key.lower()
+    if normalized in POST_EVENT_LABEL_FIELDS:
+        return None
     if isinstance(value, dict):
-        return {str(k): _sanitize_evidence(v, str(k)) for k, v in value.items()}
+        sanitized: dict[str, Any] = {}
+        for nested_key, nested_value in value.items():
+            cleaned = _sanitize_evidence(nested_value, str(nested_key))
+            if cleaned is not None:
+                sanitized[str(nested_key)] = cleaned
+        return sanitized
     if isinstance(value, list):
-        return [_sanitize_evidence(item, key) for item in value[:20]]
+        sanitized_items = [_sanitize_evidence(item, key) for item in value[:20]]
+        return [item for item in sanitized_items if item is not None]
     if normalized in {"ip", "ip_address", "client_ip"}:
         return "[redacted]"
     if normalized.endswith("_id") or normalized in {
@@ -90,7 +114,12 @@ def _sanitize_evidence(value: Any, key: str = "") -> Any:
 
 
 def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
-    """Minimize PII before any model call or audit write while preserving investigation signals."""
+    """Build event-time, PII-minimized context for model calls and audit records.
+
+    Post-event supervision fields such as risk/fraud/chargeback labels and analyst verdicts
+    are intentionally excluded. They belong to offline evaluation/training feedback, not
+    to the online investigation features available at decision time.
+    """
     alert = request.alert
     tx = request.transaction or {}
 
@@ -112,7 +141,6 @@ def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
         "channel": tx.get("channel"),
         "city": tx.get("city"),
         "transaction_status": tx.get("transaction_status"),
-        "risk_label": tx.get("risk_label"),
         "is_black_device": bool(tx.get("is_black_device")),
         "is_black_card": bool(tx.get("is_black_card")),
         "user_ref": _tokenize(tx.get("user_id"), "usr"),
@@ -127,7 +155,6 @@ def sanitize_context(request: ExplainRequest) -> dict[str, Any]:
                 "amount": event.get("amount"),
                 "channel": event.get("channel"),
                 "transaction_status": event.get("transaction_status"),
-                "risk_label": event.get("risk_label"),
                 "user_ref": _tokenize(event.get("user_id"), "usr"),
                 "device_ref": _tokenize(event.get("device_id"), "dev"),
             }
@@ -149,7 +176,7 @@ def fallback_explanation(
     alert = request.alert
     rule_id = str(alert.get("rule_id") or "UNKNOWN")
     level = str(alert.get("risk_level") or "UNKNOWN").upper()
-    reason = str(alert.get("reason") or alert.get("rule_name") or "风鍩规则命中")
+    reason = str(alert.get("reason") or alert.get("rule_name") or "风控规则命中")
     evidence = _sanitize_evidence(alert.get("evidence") or {})
 
     evidence_items = [f"rule_id={rule_id}", f"risk_level={level}", reason]
@@ -195,6 +222,25 @@ def fallback_explanation(
         prompt_version=PROMPT_VERSION,
         model=None,
     )
+
+
+def _http_status(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _classify_provider_error(exc: Exception) -> DegradationReason:
+    name = exc.__class__.__name__.casefold()
+    status = _http_status(exc)
+    if status == 429 or "ratelimit" in name or "rate_limit" in name:
+        return "provider_rate_limited"
+    if status in {408, 504} or "timeout" in name or "timedout" in name:
+        return "provider_timeout"
+    return "provider_error"
 
 
 class RiskExplainer:
@@ -293,34 +339,53 @@ class RiskExplainer:
 
         try:
             payload = sanitize_context(request)
-            response = self._client.responses.create(
-                model=self.model,
-                instructions=SYSTEM_PROMPT,
-                input=json.dumps(payload, ensure_ascii=False),
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "finguard_risk_explanation",
-                        "strict": True,
-                        "schema": EXPLANATION_SCHEMA,
-                    }
-                },
-            )
-            parsed = json.loads(response.output_text)
+            try:
+                response = self._client.responses.create(
+                    model=self.model,
+                    instructions=SYSTEM_PROMPT,
+                    input=json.dumps(payload, ensure_ascii=False),
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "finguard_risk_explanation",
+                            "strict": True,
+                            "schema": EXPLANATION_SCHEMA,
+                        }
+                    },
+                )
+            except Exception as exc:
+                self._record_failure()
+                reason = _classify_provider_error(exc)
+                return fallback_explanation(
+                    request,
+                    limitation=(
+                        "LLM provider unavailable; fallback activated "
+                        f"({exc.__class__.__name__})."
+                    ),
+                    degradation_reason=reason,
+                )
+
+            try:
+                parsed = json.loads(response.output_text)
+                result = RiskExplanation(
+                    **parsed,
+                    source="llm",
+                    degradation_reason=None,
+                    prompt_version=PROMPT_VERSION,
+                    model=self.model,
+                )
+            except (json.JSONDecodeError, ValidationError, TypeError, ValueError, AttributeError) as exc:
+                self._record_failure()
+                return fallback_explanation(
+                    request,
+                    limitation=(
+                        "LLM returned invalid structured output; fallback activated "
+                        f"({exc.__class__.__name__})."
+                    ),
+                    degradation_reason="invalid_model_output",
+                )
+
             self._record_success()
-            return RiskExplanation(
-                **parsed,
-                source="llm",
-                degradation_reason=None,
-                prompt_version=PROMPT_VERSION,
-                model=self.model,
-            )
-        except Exception as exc:
-            self._record_failure()
-            return fallback_explanation(
-                request,
-                limitation=f"LLM unavailable; fallback activated ({exc.__class__.__name__}).",
-                degradation_reason="provider_error",
-            )
+            return result
         finally:
             self._leave_provider()
